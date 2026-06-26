@@ -1,0 +1,62 @@
+# --- System & Editors ---
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.netrwhist
+.idea/
+.vscode/
+
+# --- Rust (Tauri/CLI) ---
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.env
+
+# --- C / C++ ---
+*.o
+*.obj
+*.exe
+*.out
+*.app
+
+# --- KiCad ---
+*.bak
+*-bak
+*.kicad_prl
+*-save.kicad_pcb
+*_autosave-*
+fp-info-cache
+/plots/
+
+# --- FreeCAD & Blender ---
+*.bak
+*.lock
+*.blend1
+*.blend2
+
+# --- LaTeX ---
+*.aux
+*.log
+*.toc
+*.pdf
+*.out
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.blg
+*.bbl
+
+# --- OpenRocket & Simulations ---
+*.bak
+*.log
+*.tmp
+
