@@ -1,0 +1,16 @@
+pymza/
+├── backend/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs
+│       ├── db.rs
+│       ├── models/
+│       │   ├── client.rs
+│       │   ├── alert.rs
+│       │   └── score.rs
+│       └── services/
+│           ├── ocr_validation.rs
+│           ├── trust_score.rs
+│           └── early_warning.rs
+├── frontend/
+└── docker-compose.yml
