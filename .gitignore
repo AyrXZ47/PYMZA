@@ -60,3 +60,4 @@ fp-info-cache
 *.log
 *.tmp
 
+.aider*
