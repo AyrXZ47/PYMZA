@@ -74,8 +74,90 @@ fn Sidebar() -> Element {
 fn MainArea() -> Element {
     rsx! {
         div {
-            class: "bg-slate-800 flex-1 p-4",
-            "Main Area Content"
+            class: "bg-slate-800 flex-1 p-8 text-slate-200",
+            // Header de Solicitud
+            div {
+                class: "flex justify-between items-center mb-4",
+                div {
+                    class: "text-2xl font-bold",
+                    "SOLICITUD: Janeth Ramos Zamora"
+                }
+                div {
+                    class: "bg-yellow-500 w-3 h-3 rounded-full mr-2 inline-block",
+                }
+                div {
+                    class: "font-semibold text-xl",
+                    "Monto Solicitado: $15,000 MXN"
+                }
+            }
+            // Navegación de Tabs
+            div {
+                class: "border-b border-slate-700 mb-6",
+                div {
+                    class: "flex justify-between items-center",
+                    div {
+                        class: "text-blue-400 font-semibold border-b-2 border-blue-500 p-1",
+                        "TAB 1: Open Banking"
+                    }
+                    div {
+                        class: "text-slate-400 p-1",
+                        "TAB 2: Servicios"
+                    }
+                    div {
+                        class: "text-slate-400 p-1",
+                        "TAB 3: INE/OCR"
+                    }
+                }
+            }
+            // Grid de Contenido
+            div {
+                class: "grid grid-cols-2 gap-6 mt-6",
+                div {
+                    class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
+                    div {
+                        class: "text-green-500 text-4xl font-bold mb-2",
+                        "820"
+                    }
+                    div {
+                        class: "text-green-500 font-semibold",
+                        "Riesgo Bajo"
+                    }
+                }
+                div {
+                    class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
+                    ul {
+                        class: "list-none",
+                        li {
+                            class: "text-slate-400 mb-2",
+                            "CFE (Al día)"
+                        }
+                        li {
+                            class: "text-slate-400 mb-2",
+                            "Agua (Al día)"
+                        }
+                        li {
+                            class: "text-slate-400 mb-2",
+                            "Telcel (5 días de atraso)"
+                        }
+                    }
+                }
+            }
+            // Action Bar
+            div {
+                class: "flex justify-end gap-4 mt-8",
+                button {
+                    class: "border border-blue-500 text-blue-500 px-4 py-2 rounded-lg hover:bg-blue-500 hover:text-white",
+                    "Descargar Reporte"
+                }
+                button {
+                    class: "border border-red-500 text-red-500 px-4 py-2 rounded-lg hover:bg-red-500 hover:text-white",
+                    "Rechazar"
+                }
+                button {
+                    class: "bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600",
+                    "Aprobar"
+                }
+            }
         }
     }
 }
