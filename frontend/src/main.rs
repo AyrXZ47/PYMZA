@@ -2,6 +2,13 @@ use dioxus::prelude::*;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
+#[derive(Clone, Copy, PartialEq)]
+enum TabState {
+    OpenBanking,
+    Servicios,
+    IneOcr,
+}
+
 fn main() {
     dioxus::launch(App);
 }
@@ -72,6 +79,8 @@ fn Sidebar() -> Element {
 
 #[component]
 fn MainArea() -> Element {
+    let mut active_tab = use_signal(|| TabState::OpenBanking);
+
     rsx! {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
@@ -96,51 +105,76 @@ fn MainArea() -> Element {
                 div {
                     class: "flex justify-between items-center",
                     div {
-                        class: "text-blue-400 font-semibold border-b-2 border-blue-500 p-1",
+                        class: format!("cursor-pointer p-1 {}", if active_tab() == TabState::OpenBanking { "text-blue-400 font-semibold border-b-2 border-blue-500" } else { "text-slate-400" }),
+                        onclick: move |_| active_tab.set(TabState::OpenBanking),
                         "TAB 1: Open Banking"
                     }
                     div {
-                        class: "text-slate-400 p-1",
+                        class: format!("cursor-pointer p-1 {}", if active_tab() == TabState::Servicios { "text-blue-400 font-semibold border-b-2 border-blue-500" } else { "text-slate-400" }),
+                        onclick: move |_| active_tab.set(TabState::Servicios),
                         "TAB 2: Servicios"
                     }
                     div {
-                        class: "text-slate-400 p-1",
+                        class: format!("cursor-pointer p-1 {}", if active_tab() == TabState::IneOcr { "text-blue-400 font-semibold border-b-2 border-blue-500" } else { "text-slate-400" }),
+                        onclick: move |_| active_tab.set(TabState::IneOcr),
                         "TAB 3: INE/OCR"
                     }
                 }
             }
             // Grid de Contenido
-            div {
-                class: "grid grid-cols-2 gap-6 mt-6",
-                div {
-                    class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
+            match active_tab() {
+                TabState::OpenBanking => rsx! {
                     div {
-                        class: "text-green-500 text-4xl font-bold mb-2",
-                        "820"
+                        class: "grid grid-cols-2 gap-6 mt-6",
+                        div {
+                            class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
+                            div {
+                                class: "text-green-500 text-4xl font-bold mb-2",
+                                "820"
+                            }
+                            div {
+                                class: "text-green-500 font-semibold",
+                                "Riesgo Bajo"
+                            }
+                        }
+                        div {
+                            class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
+                            ul {
+                                class: "list-none",
+                                li {
+                                    class: "text-slate-400 mb-2",
+                                    "CFE (Al día)"
+                                }
+                                li {
+                                    class: "text-slate-400 mb-2",
+                                    "Agua (Al día)"
+                                }
+                                li {
+                                    class: "text-slate-400 mb-2",
+                                    "Telcel (5 días de atraso)"
+                                }
+                            }
+                        }
                     }
+                },
+                TabState::Servicios => rsx! {
                     div {
-                        class: "text-green-500 font-semibold",
-                        "Riesgo Bajo"
-                    }
-                }
-                div {
-                    class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
-                    ul {
-                        class: "list-none",
-                        li {
-                            class: "text-slate-400 mb-2",
-                            "CFE (Al día)"
-                        }
-                        li {
-                            class: "text-slate-400 mb-2",
-                            "Agua (Al día)"
-                        }
-                        li {
-                            class: "text-slate-400 mb-2",
-                            "Telcel (5 días de atraso)"
+                        class: "border-2 border-dashed border-slate-600 rounded-xl p-12 mt-6 flex items-center justify-center",
+                        div {
+                            class: "text-slate-400 text-lg",
+                            "Próximamente"
                         }
                     }
-                }
+                },
+                TabState::IneOcr => rsx! {
+                    div {
+                        class: "border-2 border-dashed border-slate-600 rounded-xl p-12 mt-6 flex items-center justify-center",
+                        div {
+                            class: "text-slate-400 text-lg",
+                            "Dropzone OCR"
+                        }
+                    }
+                },
             }
             // Action Bar
             div {
