@@ -168,10 +168,26 @@ fn MainArea() -> Element {
                 },
                 TabState::IneOcr => rsx! {
                     div {
-                        class: "border-2 border-dashed border-slate-600 rounded-xl p-12 mt-6 flex items-center justify-center",
+                        class: "flex flex-col items-center justify-center w-full max-w-2xl h-64 border-2 border-dashed border-slate-600 bg-slate-900/50 rounded-2xl hover:border-blue-500 hover:bg-slate-800/50 transition-all cursor-pointer",
                         div {
-                            class: "text-slate-400 text-lg",
-                            "Dropzone OCR"
+                            class: "text-slate-300 text-sm mb-4",
+                            "Validación de Identidad (Prevención de Fraude)"
+                        }
+                        div {
+                            class: "flex flex-col items-center justify-center w-full h-full",
+                            div {
+                                class: "text-slate-400 text-lg",
+                                "Arrastra el anverso de la INE aquí o haz clic para explorar"
+                            }
+                            div {
+                                class: "text-slate-400 text-sm mt-2",
+                                "Formatos soportados: JPG, PNG, PDF"
+                            }
+                        }
+                        button {
+                            class: "bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all",
+                            onclick: |_| {},
+                            "Iniciar Escaneo OCR"
                         }
                     }
                 },
