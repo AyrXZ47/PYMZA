@@ -219,7 +219,7 @@ fn MainArea() -> Element {
             }
 
             // Render OCR Result
-            if let Some(result) = ocr_result.get() {
+            if let Some(result) = ocr_result() {
                 div {
                     class: "text-green-400 mt-4 p-4 bg-slate-900 rounded",
                     "{result}"
