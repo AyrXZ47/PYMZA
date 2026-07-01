@@ -80,6 +80,7 @@ fn Sidebar() -> Element {
 #[component]
 fn MainArea() -> Element {
     let mut active_tab = use_signal(|| TabState::OpenBanking);
+    let mut ocr_result = use_signal(|| None::<String>);
 
     rsx! {
         div {
@@ -186,7 +187,15 @@ fn MainArea() -> Element {
                         }
                         button {
                             class: "bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all",
-                            onclick: |_| {},
+                            onclick: move |_| async move {
+                                let client = reqwest::Client::new();
+                                let response = client.post("http://127.0.0.1:3000/api/ocr")
+                                    .send()
+                                    .await
+                                    .expect("Failed to send request");
+                                let result: serde_json::Value = response.json().await.expect("Failed to parse JSON");
+                                ocr_result.set(Some(format!("Status: {}, Extracted Name: {}, Confidence Score: {}", result["status"], result["extracted_name"], result["confidence_score"])));
+                            },
                             "Iniciar Escaneo OCR"
                         }
                     }
@@ -206,6 +215,14 @@ fn MainArea() -> Element {
                 button {
                     class: "bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600",
                     "Aprobar"
+                }
+            }
+
+            // Render OCR Result
+            if let Some(result) = ocr_result.get() {
+                div {
+                    class: "text-green-400 mt-4 p-4 bg-slate-900 rounded",
+                    "{result}"
                 }
             }
         }
