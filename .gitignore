@@ -62,3 +62,4 @@ fp-info-cache
 
 .aider*
 frontend/assets/tailwind.css
+backend/target/
