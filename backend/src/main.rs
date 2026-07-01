@@ -37,11 +37,11 @@ async fn health_handler() -> &'static str {
     "{\"status\": \"ok\", \"message\": \"Motor PYMZA en línea\"}"
 }
 
-async fn process_ocr() -> serde_json::Value {
-    serde_json::json!({
+async fn process_ocr() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
         "status": "success",
         "document_type": "INE",
         "confidence_score": 98,
         "extracted_name": "Janeth Ramos Zamora"
-    })
+    }))
 }
