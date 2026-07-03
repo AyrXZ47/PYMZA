@@ -219,7 +219,7 @@ fn MainArea() -> Element {
                             let client = reqwest::Client::new();
                             let res = client.post("http://127.0.0.1:3000/api/update_status")
                                 .json(&serde_json::json!({
-                                    "id": "12345",
+                                    "id": ocr_result().unwrap_or_default().replace("Status: success, Extracted Name: Janeth Ramos Zamora, Confidence Score: 98", "AQUÍ_IRÍA_EL_PARSEO_DEL_ID"),
                                     "estado": "Rechazado"
                                 }))
                                 .send()
@@ -241,7 +241,7 @@ fn MainArea() -> Element {
                             let client = reqwest::Client::new();
                             let res = client.post("http://127.0.0.1:3000/api/update_status")
                                 .json(&serde_json::json!({
-                                    "id": "12345",
+                                    "id": ocr_result().unwrap_or_default().replace("Status: success, Extracted Name: Janeth Ramos Zamora, Confidence Score: 98", "AQUÍ_IRÍA_EL_PARSEO_DEL_ID"),
                                     "estado": "Aprobado"
                                 }))
                                 .send()
