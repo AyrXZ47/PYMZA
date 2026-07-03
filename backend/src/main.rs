@@ -1,14 +1,21 @@
-mod db;
-mod models;
-mod services;
-
 use axum::{
     routing::{get, post},
     Router,
 };
+use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
 use std::net::SocketAddr;
 use tokio;
+
+#[derive(Deserialize)]
+pub struct UpdateStatusPayload {
+    id: String,
+    estado: String,
+}
+
+mod db;
+mod models;
+mod services;
 
 #[tokio::main]
 async fn main() {
@@ -22,6 +29,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/health", get(health_handler))
         .route("/api/ocr", post(process_ocr))
+        .route("/api/update_status", post(update_status))
         .layer(CorsLayer::permissive());
 
     // Run the server on port 3000
@@ -44,4 +52,11 @@ async fn process_ocr() -> axum::Json<serde_json::Value> {
         "confidence_score": 98,
         "extracted_name": "Janeth Ramos Zamora"
     }))
+}
+
+async fn update_status(axum::Json(payload): axum::Json<UpdateStatusPayload>) -> axum::Json<serde_json::Value> {
+    let client = db::connect().await.expect("DB error");
+    let coll = client.database("pymza").collection::<mongodb::bson::Document>("solicitudes");
+    coll.update_one(mongodb::bson::doc! { "id": &payload.id }, mongodb::bson::doc! { "$set": { "estado": &payload.estado } }, None).await.ok();
+    axum::Json(serde_json::json!({"status": "success"}))
 }
