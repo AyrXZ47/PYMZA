@@ -3,7 +3,7 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
 use tokio;
 
@@ -55,8 +55,8 @@ async fn process_ocr() -> axum::Json<serde_json::Value> {
 }
 
 async fn update_status(axum::Json(payload): axum::Json<UpdateStatusPayload>) -> axum::Json<serde_json::Value> {
-    let client = db::connect().await.expect("DB error");
-    let coll = client.database("pymza").collection::<mongodb::bson::Document>("solicitudes");
+    let db = db::connect().await.expect("DB error");
+    let coll = db.collection::<mongodb::bson::Document>("solicitudes");
     coll.update_one(mongodb::bson::doc! { "id": &payload.id }, mongodb::bson::doc! { "$set": { "estado": &payload.estado } }, None).await.ok();
     axum::Json(serde_json::json!({"status": "success"}))
 }
