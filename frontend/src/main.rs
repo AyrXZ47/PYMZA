@@ -81,6 +81,7 @@ fn Sidebar() -> Element {
 fn MainArea() -> Element {
     let mut active_tab = use_signal(|| TabState::OpenBanking);
     let mut ocr_result = use_signal(|| None::<String>);
+    let mut status_message = use_signal(|| None::<String>);
 
     rsx! {
         div {
@@ -201,19 +202,57 @@ fn MainArea() -> Element {
                     }
                 },
             }
+            
             // Action Bar
             div {
                 class: "flex justify-end gap-4 mt-8",
+                
                 button {
                     class: "border border-blue-500 text-blue-500 px-4 py-2 rounded-lg hover:bg-blue-500 hover:text-white",
                     "Descargar Reporte"
                 }
+
                 button {
                     class: "border border-red-500 text-red-500 px-4 py-2 rounded-lg hover:bg-red-500 hover:text-white",
+                    onclick: move |_| {
+                        spawn(async move {
+                            let client = reqwest::Client::new();
+                            let res = client.post("http://127.0.0.1:3000/api/update_status")
+                                .json(&serde_json::json!({
+                                    "id": "12345",
+                                    "estado": "Rechazado"
+                                }))
+                                .send()
+                                .await;
+
+                            match res {
+                                Ok(r) if r.status().is_success() => status_message.set(Some("Solicitud Rechazada".to_string())),
+                                _ => status_message.set(Some("Error de conexión al servidor".to_string())),
+                            }
+                        });
+                    },
                     "Rechazar"
                 }
+
                 button {
                     class: "bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600",
+                    onclick: move |_| {
+                        spawn(async move {
+                            let client = reqwest::Client::new();
+                            let res = client.post("http://127.0.0.1:3000/api/update_status")
+                                .json(&serde_json::json!({
+                                    "id": "12345",
+                                    "estado": "Aprobado"
+                                }))
+                                .send()
+                                .await;
+
+                            match res {
+                                Ok(r) if r.status().is_success() => status_message.set(Some("¡Solicitud Aprobada!".to_string())),
+                                _ => status_message.set(Some("Error de conexión al servidor".to_string())),
+                            }
+                        });
+                    },
                     "Aprobar"
                 }
             }
@@ -223,6 +262,14 @@ fn MainArea() -> Element {
                 div {
                     class: "text-green-400 mt-4 p-4 bg-slate-900 rounded",
                     "{result}"
+                }
+            }
+
+            // Render Status Message
+            if let Some(msg) = status_message() {
+                div {
+                    class: "text-yellow-400 mt-2 p-4 bg-slate-900 rounded",
+                    "{msg}"
                 }
             }
         }
