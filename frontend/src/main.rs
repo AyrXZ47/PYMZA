@@ -1,5 +1,4 @@
 use dioxus::prelude::*;
-use std::sync::{Arc, Mutex};
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
@@ -13,9 +12,6 @@ enum TabState {
 fn main() {
     dioxus::launch(App);
 }
-
-// Global ID storage to avoid signal issues in async closures
-static GLOBAL_ID: Mutex<Option<String>> = Mutex::new(None);
 
 #[component]
 fn App() -> Element {
@@ -85,9 +81,9 @@ fn Sidebar() -> Element {
 fn MainArea() -> Element {
     let mut active_tab = use_signal(|| TabState::OpenBanking);
     let mut ocr_result = use_signal(|| None::<String>);
-    let status_message = use_signal(|| None::<String>());
+    let mut status_message = use_signal(|| None::<String>);
     // NUEVO: Guardaremos el ID real de Mongo aquí
-    let document_id = use_signal(|| String::new()); 
+    let mut document_id = use_signal(|| String::new()); 
 
     rsx! {
         div {
@@ -231,25 +227,24 @@ fn MainArea() -> Element {
                     class: "border border-blue-500 text-blue-500 px-4 py-2 rounded-lg hover:bg-blue-500 hover:text-white",
                     onclick: move |_| {
                         spawn(async move {
+                            let id = document_id();
+                            if id.is_empty() {
+                                status_message.set(Some("No hay ID disponible. Ejecuta OCR primero.".to_string()));
+                                return;
+                            }
                             let client = reqwest::Client::new();
-                            match document_id.lock().unwrap() {
-                                Some(id) => {
-                                    if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
-                                        .json(&serde_json::json!({
-                                            "id": id, // <--- AQUÍ ENVIAMOS EL ID REAL
-                                            "estado": "Rechazado"
-                                        }))
-                                        .send()
-                                        .await {
-                                        match res.status().is_success() {
-                                            true => status_message.set(Some("Solicitud Rechazada".to_string())),
-                                            false => status_message.set(Some("Error de conexión al servidor".to_string()))
-                                        }
-                                    },
-                                Err(e) => {
-                                    status_message.set(Some(format!("Error: {}", e)));
+                            if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
+                                .json(&serde_json::json!({
+                                    "id": id,
+                                    "estado": "Rechazado"
+                                }))
+                                .send()
+                                .await {
+                                match res.status().is_success() {
+                                    true => status_message.set(Some("Solicitud Rechazada".to_string())),
+                                    false => status_message.set(Some("Error de conexión al servidor".to_string()))
                                 }
-                            };
+                            }
                         });
                     },
                     "Rechazar"
@@ -259,25 +254,24 @@ fn MainArea() -> Element {
                     class: "bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600",
                     onclick: move |_| {
                         spawn(async move {
+                            let id = document_id();
+                            if id.is_empty() {
+                                status_message.set(Some("No hay ID disponible. Ejecuta OCR primero.".to_string()));
+                                return;
+                            }
                             let client = reqwest::Client::new();
-                            match document_id.lock().unwrap() {
-                                Some(id) => {
-                                    if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
-                                        .json(&serde_json::json!({
-                                            "id": id, // <--- AQUÍ ENVIAMOS EL ID REAL
-                                            "estado": "Aprobado"
-                                        }))
-                                        .send()
-                                        .await {
-                                        match res.status().is_success() {
-                                            true => status_message.set(Some("¡Solicitud Aprobada!".to_string())),
-                                            false => status_message.set(Some("Error de conexión al servidor".to_string()))
-                                        }
-                                    },
-                                Err(e) => {
-                                    status_message.set(Some(format!("Error: {}", e)));
+                            if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
+                                .json(&serde_json::json!({
+                                    "id": id,
+                                    "estado": "Aprobado"
+                                }))
+                                .send()
+                                .await {
+                                match res.status().is_success() {
+                                    true => status_message.set(Some("¡Solicitud Aprobada!".to_string())),
+                                    false => status_message.set(Some("Error de conexión al servidor".to_string()))
                                 }
-                            };
+                            }
                         });
                     },
                     "Aprobar"
