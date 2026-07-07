@@ -87,7 +87,7 @@ fn MainArea() -> Element {
     let mut ocr_result = use_signal(|| None::<String>);
     let status_message = use_signal(|| None::<String>());
     // NUEVO: Guardaremos el ID real de Mongo aquí
-    let mut document_id = use_signal(|| String::new()); 
+    let document_id = use_signal(|| String::new()); 
 
     rsx! {
         div {
