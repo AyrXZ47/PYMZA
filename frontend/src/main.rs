@@ -288,7 +288,7 @@ fn MainArea() -> Element {
                                 .json(&serde_json::json!({"id": id, "estado": "Rechazado"}))
                                 .send().await {
                                 match res.status().is_success() {
-                                    true => modal.set(ModalState::Success("Solicitud Rechazada".to_string())),
+                                    true => modal.set(ModalState::Error("Solicitud Rechazada".to_string())),
                                     false => modal.set(ModalState::Error("Error del servidor".to_string())),
                                 }
                             } else {
