@@ -85,10 +85,9 @@ fn Sidebar() -> Element {
 fn MainArea() -> Element {
     let mut active_tab = use_signal(|| TabState::OpenBanking);
     let mut ocr_result = use_signal(|| None::<String>);
-    let status_message = use_signal(|| None::<String>);
-    
-    // NUEVO: Guardaremos el ID real de Mongo aquí (usando global para evitar signal issues)
-    GLOBAL_ID.lock().unwrap().take();
+    let status_message = use_signal(|| None::<String>());
+    // NUEVO: Guardaremos el ID real de Mongo aquí
+    let mut document_id = use_signal(|| String::new()); 
 
     rsx! {
         div {
@@ -190,7 +189,7 @@ fn MainArea() -> Element {
                             }
                             div {
                                 class: "text-slate-400 text-sm mt-2",
-                                "Formatos soportidos: JPG, PNG, PDF"
+                                "Formatos soportados: JPG, PNG, PDF"
                             }
                         }
                         button {
@@ -201,9 +200,9 @@ fn MainArea() -> Element {
                                     match client.post("http://127.0.0.1:3000/api/ocr").send().await {
                                         Ok(response) => {
                                             if let Ok(result) = response.json::<serde_json::Value>().await {
-                                                // 1. Extraemos el ID que nos dio el backend y lo guardamos globalmente
-                                                if let Some(id_str) = result["id"].as_str() {
-                                                    *GLOBAL_ID.lock().unwrap() = Some(id_str.to_string());
+                                                // 1. Extraemos el ID que nos dio el backend y lo guardamos
+                                                if let Some(id) = result["id"].as_str() {
+                                                    document_id.set(id.to_string());
                                                 }
                                                 
                                                 // 2. Mostramos el mensaje visual (sin confidence score)
@@ -233,7 +232,7 @@ fn MainArea() -> Element {
                     onclick: move |_| {
                         spawn(async move {
                             let client = reqwest::Client::new();
-                            match GLOBAL_ID.lock().unwrap() {
+                            match document_id.lock().unwrap() {
                                 Some(id) => {
                                     if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
                                         .json(&serde_json::json!({
@@ -261,7 +260,7 @@ fn MainArea() -> Element {
                     onclick: move |_| {
                         spawn(async move {
                             let client = reqwest::Client::new();
-                            match GLOBAL_ID.lock().unwrap() {
+                            match document_id.lock().unwrap() {
                                 Some(id) => {
                                     if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
                                         .json(&serde_json::json!({
