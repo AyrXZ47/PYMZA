@@ -81,7 +81,10 @@ fn Sidebar() -> Element {
 fn MainArea() -> Element {
     let mut active_tab = use_signal(|| TabState::OpenBanking);
     let mut ocr_result = use_signal(|| None::<String>);
-    let mut status_message = use_signal(|| None::<String>);
+    let status_message = use_signal(|| None::<String>);
+    
+    // NUEVO: Guardaremos el ID real de Mongo aquí
+    let mut document_id = use_signal(|| String::new());
 
     rsx! {
         div {
@@ -183,19 +186,25 @@ fn MainArea() -> Element {
                             }
                             div {
                                 class: "text-slate-400 text-sm mt-2",
-                                "Formatos soportados: JPG, PNG, PDF"
+                                "Formatos soportidos: JPG, PNG, PDF"
                             }
                         }
                         button {
                             class: "bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all",
-                            onclick: move |_| async move {
-                                let client = reqwest::Client::new();
-                                let response = client.post("http://127.0.0.1:3000/api/ocr")
-                                    .send()
-                                    .await
-                                    .expect("Failed to send request");
-                                let result: serde_json::Value = response.json().await.expect("Failed to parse JSON");
-                                ocr_result.set(Some(format!("Status: {}, Extracted Name: {}, Confidence Score: {}", result["status"], result["extracted_name"], result["confidence_score"])));
+                            onclick: move |_| {
+                                spawn(async move {
+                                    let client = reqwest::Client::new();
+                                    let response = client.post("http://127.0.0.1:3000/api/ocr").send().await.unwrap();
+                                    let result: serde_json::Value = response.json().await.unwrap();
+                                    
+                                    // 1. Extraemos el ID que nos dio el backend y lo guardamos
+                                    if let Some(id) = result["id"].as_str() {
+                                        document_id.set(id.to_string());
+                                    }
+                                    
+                                    // 2. Mostramos el mensaje visual (sin confidence score)
+                                    ocr_result.set(Some(format!("Status: {}, Extracted Name: {}", result["status"], result["extracted_name"])));
+                                });
                             },
                             "Iniciar Escaneo OCR"
                         }
@@ -219,7 +228,7 @@ fn MainArea() -> Element {
                             let client = reqwest::Client::new();
                             let res = client.post("http://127.0.0.1:3000/api/update_status")
                                 .json(&serde_json::json!({
-                                    "id": ocr_result().unwrap_or_default().replace("Status: success, Extracted Name: Janeth Ramos Zamora, Confidence Score: 98", "AQUÍ_IRÍA_EL_PARSEO_DEL_ID"),
+                                    "id": document_id(), // <--- AQUÍ ENVIAMOS EL ID REAL
                                     "estado": "Rechazado"
                                 }))
                                 .send()
@@ -241,7 +250,7 @@ fn MainArea() -> Element {
                             let client = reqwest::Client::new();
                             let res = client.post("http://127.0.0.1:3000/api/update_status")
                                 .json(&serde_json::json!({
-                                    "id": ocr_result().unwrap_or_default().replace("Status: success, Extracted Name: Janeth Ramos Zamora, Confidence Score: 98", "AQUÍ_IRÍA_EL_PARSEO_DEL_ID"),
+                                    "id": document_id(), // <--- AQUÍ ENVIAMOS EL ID REAL
                                     "estado": "Aprobado"
                                 }))
                                 .send()
@@ -257,7 +266,7 @@ fn MainArea() -> Element {
                 }
             }
 
-            // Render OCR Result
+            // Render OCR Result (sin confidence score)
             if let Some(result) = ocr_result() {
                 div {
                     class: "text-green-400 mt-4 p-4 bg-slate-900 rounded",
