@@ -1,6 +1,12 @@
 use dioxus::prelude::*;
+use std::sync::OnceLock;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| reqwest::Client::new())
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum TabState {
@@ -192,8 +198,7 @@ fn MainArea() -> Element {
                             class: "bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all",
                             onclick: move |_| {
                                 spawn(async move {
-                                    let client = reqwest::Client::new();
-                                    match client.post("http://127.0.0.1:3000/api/ocr").send().await {
+                                    match http_client().post("http://127.0.0.1:3000/api/ocr").send().await {
                                         Ok(response) => {
                                             if let Ok(result) = response.json::<serde_json::Value>().await {
                                                 // 1. Extraemos el ID que nos dio el backend y lo guardamos
@@ -232,8 +237,7 @@ fn MainArea() -> Element {
                                 status_message.set(Some("No hay ID disponible. Ejecuta OCR primero.".to_string()));
                                 return;
                             }
-                            let client = reqwest::Client::new();
-                            if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
+                            if let Ok(res) = http_client().post("http://127.0.0.1:3000/api/update_status")
                                 .json(&serde_json::json!({
                                     "id": id,
                                     "estado": "Rechazado"
@@ -259,8 +263,7 @@ fn MainArea() -> Element {
                                 status_message.set(Some("No hay ID disponible. Ejecuta OCR primero.".to_string()));
                                 return;
                             }
-                            let client = reqwest::Client::new();
-                            if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
+                            if let Ok(res) = http_client().post("http://127.0.0.1:3000/api/update_status")
                                 .json(&serde_json::json!({
                                     "id": id,
                                     "estado": "Aprobado"
