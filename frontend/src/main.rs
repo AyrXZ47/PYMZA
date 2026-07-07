@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use std::sync::{Arc, Mutex};
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
@@ -12,6 +13,9 @@ enum TabState {
 fn main() {
     dioxus::launch(App);
 }
+
+// Global ID storage to avoid signal issues in async closures
+static GLOBAL_ID: Mutex<Option<String>> = Mutex::new(None);
 
 #[component]
 fn App() -> Element {
@@ -83,8 +87,8 @@ fn MainArea() -> Element {
     let mut ocr_result = use_signal(|| None::<String>);
     let status_message = use_signal(|| None::<String>);
     
-    // NUEVO: Guardaremos el ID real de Mongo aquí
-    let mut document_id = use_signal(|| String::new());
+    // NUEVO: Guardaremos el ID real de Mongo aquí (usando global para evitar signal issues)
+    GLOBAL_ID.lock().unwrap().take();
 
     rsx! {
         div {
@@ -194,16 +198,24 @@ fn MainArea() -> Element {
                             onclick: move |_| {
                                 spawn(async move {
                                     let client = reqwest::Client::new();
-                                    let response = client.post("http://127.0.0.1:3000/api/ocr").send().await.unwrap();
-                                    let result: serde_json::Value = response.json().await.unwrap();
-                                    
-                                    // 1. Extraemos el ID que nos dio el backend y lo guardamos
-                                    if let Some(id) = result["id"].as_str() {
-                                        document_id.set(id.to_string());
-                                    }
-                                    
-                                    // 2. Mostramos el mensaje visual (sin confidence score)
-                                    ocr_result.set(Some(format!("Status: {}, Extracted Name: {}", result["status"], result["extracted_name"])));
+                                    match client.post("http://127.0.0.1:3000/api/ocr").send().await {
+                                        Ok(response) => {
+                                            if let Ok(result) = response.json::<serde_json::Value>().await {
+                                                // 1. Extraemos el ID que nos dio el backend y lo guardamos globalmente
+                                                if let Some(id_str) = result["id"].as_str() {
+                                                    *GLOBAL_ID.lock().unwrap() = Some(id_str.to_string());
+                                                }
+                                                
+                                                // 2. Mostramos el mensaje visual (sin confidence score)
+                                                ocr_result.set(Some(format!("Status: {}, Extracted Name: {}", result["status"], result["extracted_name"])));
+                                            } else {
+                                                status_message.set(Some("Error al leer respuesta JSON".to_string()));
+                                            }
+                                        },
+                                        Err(e) => {
+                                            status_message.set(Some(format!("Error de conexión OCR: {}", e)));
+                                        }
+                                    };
                                 });
                             },
                             "Iniciar Escaneo OCR"
@@ -218,26 +230,27 @@ fn MainArea() -> Element {
                 
                 button {
                     class: "border border-blue-500 text-blue-500 px-4 py-2 rounded-lg hover:bg-blue-500 hover:text-white",
-                    "Descargar Reporte"
-                }
-
-                button {
-                    class: "border border-red-500 text-red-500 px-4 py-2 rounded-lg hover:bg-red-500 hover:text-white",
                     onclick: move |_| {
                         spawn(async move {
                             let client = reqwest::Client::new();
-                            let res = client.post("http://127.0.0.1:3000/api/update_status")
-                                .json(&serde_json::json!({
-                                    "id": document_id(), // <--- AQUÍ ENVIAMOS EL ID REAL
-                                    "estado": "Rechazado"
-                                }))
-                                .send()
-                                .await;
-
-                            match res {
-                                Ok(r) if r.status().is_success() => status_message.set(Some("Solicitud Rechazada".to_string())),
-                                _ => status_message.set(Some("Error de conexión al servidor".to_string())),
-                            }
+                            match GLOBAL_ID.lock().unwrap() {
+                                Some(id) => {
+                                    if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
+                                        .json(&serde_json::json!({
+                                            "id": id, // <--- AQUÍ ENVIAMOS EL ID REAL
+                                            "estado": "Rechazado"
+                                        }))
+                                        .send()
+                                        .await {
+                                        match res.status().is_success() {
+                                            true => status_message.set(Some("Solicitud Rechazada".to_string())),
+                                            false => status_message.set(Some("Error de conexión al servidor".to_string()))
+                                        }
+                                    },
+                                Err(e) => {
+                                    status_message.set(Some(format!("Error: {}", e)));
+                                }
+                            };
                         });
                     },
                     "Rechazar"
@@ -248,18 +261,24 @@ fn MainArea() -> Element {
                     onclick: move |_| {
                         spawn(async move {
                             let client = reqwest::Client::new();
-                            let res = client.post("http://127.0.0.1:3000/api/update_status")
-                                .json(&serde_json::json!({
-                                    "id": document_id(), // <--- AQUÍ ENVIAMOS EL ID REAL
-                                    "estado": "Aprobado"
-                                }))
-                                .send()
-                                .await;
-
-                            match res {
-                                Ok(r) if r.status().is_success() => status_message.set(Some("¡Solicitud Aprobada!".to_string())),
-                                _ => status_message.set(Some("Error de conexión al servidor".to_string())),
-                            }
+                            match GLOBAL_ID.lock().unwrap() {
+                                Some(id) => {
+                                    if let Ok(res) = client.post("http://127.0.0.1:3000/api/update_status")
+                                        .json(&serde_json::json!({
+                                            "id": id, // <--- AQUÍ ENVIAMOS EL ID REAL
+                                            "estado": "Aprobado"
+                                        }))
+                                        .send()
+                                        .await {
+                                        match res.status().is_success() {
+                                            true => status_message.set(Some("¡Solicitud Aprobada!".to_string())),
+                                            false => status_message.set(Some("Error de conexión al servidor".to_string()))
+                                        }
+                                    },
+                                Err(e) => {
+                                    status_message.set(Some(format!("Error: {}", e)));
+                                }
+                            };
                         });
                     },
                     "Aprobar"
