@@ -6,6 +6,11 @@ const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 const SPINNER_CSS: &str = r#"
 @keyframes pymza-spin { to { transform: rotate(360deg); } }
+@keyframes pymza-pop {
+    0% { transform: scale(0); opacity: 0; }
+    60% { transform: scale(1.15); }
+    100% { transform: scale(1); opacity: 1; }
+}
 .pymza-spinner {
     animation: pymza-spin 0.8s linear infinite;
     border: 4px solid rgba(255,255,255,0.2);
@@ -13,6 +18,9 @@ const SPINNER_CSS: &str = r#"
     border-radius: 50%;
     width: 48px; height: 48px;
     display: inline-block;
+}
+.pymza-pop {
+    animation: pymza-pop 0.4s ease-out;
 }
 "#;
 
@@ -121,7 +129,7 @@ fn MainArea() -> Element {
         ModalState::Success(msg) => rsx! {
             div { class: "fixed inset-0 z-40 flex items-center justify-center bg-black/60",
                 div { class: "bg-slate-800 rounded-2xl p-8 flex flex-col items-center gap-6 min-w-[320px] shadow-2xl border border-slate-700",
-                    div { class: "w-16 h-16 rounded-full bg-green-500 flex items-center justify-center",
+                    div { class: "pymza-pop w-16 h-16 rounded-full bg-green-500 flex items-center justify-center",
                         svg { class: "w-8 h-8 text-white", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "3",
                             path { d: "M5 13l4 4L19 7" }
                         }
@@ -138,7 +146,7 @@ fn MainArea() -> Element {
         ModalState::Error(msg) => rsx! {
             div { class: "fixed inset-0 z-40 flex items-center justify-center bg-black/60",
                 div { class: "bg-slate-800 rounded-2xl p-8 flex flex-col items-center gap-6 min-w-[320px] shadow-2xl border border-slate-700",
-                    div { class: "w-16 h-16 rounded-full bg-red-500 flex items-center justify-center",
+                    div { class: "pymza-pop w-16 h-16 rounded-full bg-red-500 flex items-center justify-center",
                         svg { class: "w-8 h-8 text-white", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "3",
                             path { d: "M6 18L18 6M6 6l12 12" }
                         }
