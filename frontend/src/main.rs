@@ -50,13 +50,63 @@ fn main() {
 
 #[component]
 fn App() -> Element {
+    let is_authenticated = use_signal(|| false);
+
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         style { {SPINNER_CSS} }
+        if is_authenticated() {
+            div {
+                class: "flex h-screen text-white",
+                Sidebar {}
+                MainArea {}
+            }
+        } else {
+            Login { is_authenticated }
+        }
+    }
+}
+
+#[component]
+fn Login(is_authenticated: Signal<bool>) -> Element {
+    let mut email = use_signal(String::new);
+    let mut password = use_signal(String::new);
+
+    rsx! {
         div {
-            class: "flex h-screen text-white",
-            Sidebar {}
-            MainArea {}
+            class: "flex items-center justify-center h-screen bg-slate-900",
+            div {
+                class: "bg-slate-800 p-8 rounded-2xl shadow-2xl border border-slate-700 w-full max-w-md",
+                div {
+                    class: "flex flex-col items-center mb-8",
+                    div { class: "text-blue-500 font-bold text-5xl mb-2", "PYMZA" }
+                    div { class: "text-slate-400 text-sm", "Plataforma de evaluación crediticia" }
+                }
+                div { class: "flex flex-col gap-4",
+                    input {
+                        class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
+                        placeholder: "Correo de la Empresa",
+                        value: email(),
+                        oninput: move |e| email.set(e.value()),
+                    }
+                    input {
+                        class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
+                        placeholder: "Contraseña",
+                        value: password(),
+                        oninput: move |e| password.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                is_authenticated.set(true);
+                            }
+                        },
+                    }
+                    button {
+                        class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg px-4 py-3 transition-colors mt-2",
+                        onclick: move |_| is_authenticated.set(true),
+                        "Iniciar Sesión"
+                    }
+                }
+            }
         }
     }
 }
