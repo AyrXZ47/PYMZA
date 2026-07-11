@@ -69,8 +69,9 @@ fn App() -> Element {
 
 #[component]
 fn Login(is_authenticated: Signal<bool>) -> Element {
-    let mut email = use_signal(String::new);
-    let mut password = use_signal(String::new);
+    let mut correo = use_signal(|| String::new());
+    let mut password = use_signal(|| String::new());
+    let mut error_msg = use_signal(|| None::<String>);
 
     rsx! {
         div {
@@ -86,8 +87,8 @@ fn Login(is_authenticated: Signal<bool>) -> Element {
                     input {
                         class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
                         placeholder: "Correo de la Empresa",
-                        value: email(),
-                        oninput: move |e| email.set(e.value()),
+                        value: correo(),
+                        oninput: move |e| correo.set(e.value()),
                     }
                     input {
                         class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
@@ -96,14 +97,82 @@ fn Login(is_authenticated: Signal<bool>) -> Element {
                         oninput: move |e| password.set(e.value()),
                         onkeydown: move |e| {
                             if e.key() == Key::Enter {
-                                is_authenticated.set(true);
+                                let correo = correo();
+                                let password_val = password();
+                                spawn(async move {
+                                    let body = serde_json::json!({
+                                        "correo": correo,
+                                        "password": password_val
+                                    });
+                                    match reqwest::Client::new().post("http://127.0.0.1:3000/api/login")
+                                        .json(&body)
+                                        .send()
+                                        .await
+                                    {
+                                        Ok(res) => {
+                                            match res.json::<serde_json::Value>().await {
+                                                Ok(data) => {
+                                                    if data["status"] == "success" {
+                                                        is_authenticated.set(true);
+                                                    } else {
+                                                        error_msg.set(Some("Credenciales inválidas".to_string()));
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    error_msg.set(Some("Credenciales inválidas".to_string()));
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            error_msg.set(Some("Credenciales inválidas".to_string()));
+                                        }
+                                    }
+                                });
                             }
                         },
                     }
                     button {
                         class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg px-4 py-3 transition-colors mt-2",
-                        onclick: move |_| is_authenticated.set(true),
+                        onclick: move |_| {
+                            let correo = correo();
+                            let password_val = password();
+                            spawn(async move {
+                                let body = serde_json::json!({
+                                    "correo": correo,
+                                    "password": password_val
+                                });
+                                match reqwest::Client::new().post("http://127.0.0.1:3000/api/login")
+                                    .json(&body)
+                                    .send()
+                                    .await
+                                {
+                                    Ok(res) => {
+                                        match res.json::<serde_json::Value>().await {
+                                            Ok(data) => {
+                                                if data["status"] == "success" {
+                                                    is_authenticated.set(true);
+                                                } else {
+                                                    error_msg.set(Some("Credenciales inválidas".to_string()));
+                                                }
+                                            }
+                                            Err(_) => {
+                                                error_msg.set(Some("Credenciales inválidas".to_string()));
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        error_msg.set(Some("Credenciales inválidas".to_string()));
+                                    }
+                                }
+                            });
+                        },
                         "Iniciar Sesión"
+                    }
+                    if let Some(msg) = error_msg() {
+                        p {
+                            class: "text-red-500 text-sm text-center",
+                            "{msg}"
+                        }
                     }
                 }
             }
