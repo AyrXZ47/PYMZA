@@ -22,6 +22,8 @@ struct LoginPayload {
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+
     // Inicialización única
     let db_client = db::connect().await.expect("Fallo crítico en conexión DB");
 
