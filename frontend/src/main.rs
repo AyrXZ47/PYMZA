@@ -104,7 +104,7 @@ fn Login(is_authenticated: Signal<bool>) -> Element {
                                         "correo": correo,
                                         "password": password_val
                                     });
-                                    match reqwest::Client::new().post("http://127.0.0.1:3000/api/login")
+                                    match http_client().post("http://127.0.0.1:3000/api/login")
                                         .json(&body)
                                         .send()
                                         .await
@@ -141,7 +141,7 @@ fn Login(is_authenticated: Signal<bool>) -> Element {
                                     "correo": correo,
                                     "password": password_val
                                 });
-                                match reqwest::Client::new().post("http://127.0.0.1:3000/api/login")
+                                match http_client().post("http://127.0.0.1:3000/api/login")
                                     .json(&body)
                                     .send()
                                     .await

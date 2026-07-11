@@ -74,9 +74,16 @@ async fn login_empresa(
             "empresa": empresa.nombre_empresa,
             "token": "token-temporal-123"
         })),
-        _ => Json(serde_json::json!({
+        Ok(None) => Json(serde_json::json!({
             "status": "error",
             "message": "Credenciales inválidas"
-        }))
+        })),
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({
+                "status": "error",
+                "message": "Credenciales inválidas"
+            }))
+        }
     }
 }
