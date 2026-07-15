@@ -85,10 +85,10 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                                             match res.json::<serde_json::Value>().await {
                                                 Ok(data) => {
                                                     if data["status"] == "success" {
-                                                         current_company.set(data["empresa"].as_str().unwrap_or("").to_string());
-                                                         is_authenticated.set(true);
-                                                     } else {
-                                                         error_msg.set(Some("Credenciales inválidas".to_string()));
+                                                        current_company.set(data["empresa"].as_str().unwrap_or("").to_string());
+                                                        is_authenticated.set(true);
+                                                    } else {
+                                                        error_msg.set(Some("Credenciales inválidas".to_string()));
                                                     }
                                                 }
                                                 Err(_) => {
@@ -169,6 +169,7 @@ fn Sidebar(current_company: Signal<String>, mut active_menu: Signal<MenuState>) 
                     onclick: move |_| active_menu.set(MenuState::Dashboard),
                     svg { class: "w-5 h-5 mr-3", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
                         path { d: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" }
+                    }
                     "Dashboard"
                 }
                 li {
