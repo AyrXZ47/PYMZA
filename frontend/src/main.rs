@@ -51,6 +51,7 @@ fn main() {
 #[component]
 fn App() -> Element {
     let is_authenticated = use_signal(|| false);
+    let mut current_company = use_signal(|| String::new());
 
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
@@ -58,17 +59,17 @@ fn App() -> Element {
         if is_authenticated() {
             div {
                 class: "flex h-screen text-white",
-                Sidebar {}
-                MainArea {}
+                Sidebar { current_company }
+                MainArea { current_company }
             }
         } else {
-            Login { is_authenticated }
+            Login { is_authenticated, current_company }
         }
     }
 }
 
 #[component]
-fn Login(is_authenticated: Signal<bool>) -> Element {
+fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) -> Element {
     let mut correo = use_signal(|| String::new());
     let mut password = use_signal(|| String::new());
     let mut error_msg = use_signal(|| None::<String>);
@@ -113,9 +114,10 @@ fn Login(is_authenticated: Signal<bool>) -> Element {
                                             match res.json::<serde_json::Value>().await {
                                                 Ok(data) => {
                                                     if data["status"] == "success" {
-                                                        is_authenticated.set(true);
-                                                    } else {
-                                                        error_msg.set(Some("Credenciales inválidas".to_string()));
+                                                         current_company.set(data["empresa"].as_str().unwrap_or("").to_string());
+                                                         is_authenticated.set(true);
+                                                     } else {
+                                                         error_msg.set(Some("Credenciales inválidas".to_string()));
                                                     }
                                                 }
                                                 Err(_) => {
@@ -181,7 +183,7 @@ fn Login(is_authenticated: Signal<bool>) -> Element {
 }
 
 #[component]
-fn Sidebar() -> Element {
+fn Sidebar(current_company: Signal<String>) -> Element {
     rsx! {
         div {
             class: "bg-slate-900 w-64 flex flex-col items-center justify-start p-4",
@@ -205,7 +207,7 @@ fn Sidebar() -> Element {
 }
 
 #[component]
-fn MainArea() -> Element {
+fn MainArea(current_company: Signal<String>) -> Element {
     let mut active_tab = use_signal(|| TabState::OpenBanking);
     let mut toast: Signal<Option<(String, String)>> = use_signal(|| None);
     let mut document_id = use_signal(|| String::new());
@@ -285,12 +287,24 @@ fn MainArea() -> Element {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
 
-            // Header
+            // Welcome banner
             div {
-                class: "flex justify-between items-center mb-4",
-                div { class: "text-2xl font-bold", "SOLICITUD: Janeth Ramos Zamora" }
-                div { class: "bg-yellow-500 w-3 h-3 rounded-full mr-2 inline-block" }
-                div { class: "font-semibold text-xl", "Monto Solicitado: $15,000 MXN" }
+                class: "bg-gradient-to-r from-blue-900/40 to-slate-800 border border-blue-800/50 rounded-xl p-6 mb-6 flex items-center justify-between",
+                div {
+                    class: "flex items-center gap-3",
+                    svg { class: "w-8 h-8 text-blue-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                        path { d: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" }
+                    }
+                    div {
+                        div { class: "text-slate-400 text-sm font-medium uppercase tracking-wider", "Panel de Control" }
+                        div { class: "text-white text-2xl font-bold", "{current_company}" }
+                    }
+                }
+                div {
+                    class: "flex items-center gap-2 bg-slate-900/60 px-4 py-2 rounded-lg border border-slate-700",
+                    div { class: "w-2 h-2 rounded-full bg-green-500" }
+                    div { class: "text-slate-300 text-sm", "Sesión activa" }
+                }
             }
 
             // Tabs
