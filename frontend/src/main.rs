@@ -1,28 +1,7 @@
 use dioxus::prelude::*;
-use gloo_timers::future::TimeoutFuture;
 use std::sync::OnceLock;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
-
-const SPINNER_CSS: &str = r#"
-@keyframes pymza-spin { to { transform: rotate(360deg); } }
-@keyframes pymza-pop {
-    0% { transform: scale(0); opacity: 0; }
-    60% { transform: scale(1.15); }
-    100% { transform: scale(1); opacity: 1; }
-}
-.pymza-spinner {
-    animation: pymza-spin 0.8s linear infinite;
-    border: 4px solid rgba(255,255,255,0.2);
-    border-top-color: #fff;
-    border-radius: 50%;
-    width: 48px; height: 48px;
-    display: inline-block;
-}
-.pymza-pop {
-    animation: pymza-pop 0.4s ease-out;
-}
-"#;
 
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -30,18 +9,10 @@ fn http_client() -> &'static reqwest::Client {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum TabState {
-    OpenBanking,
-    Servicios,
-    IneOcr,
-}
-
-#[derive(Clone, PartialEq)]
-enum ModalState {
-    Hidden,
-    Loading,
-    Success(String),
-    Error(String),
+enum MenuState {
+    Dashboard,
+    AltaCliente,
+    Cartera,
 }
 
 fn main() {
@@ -52,15 +23,15 @@ fn main() {
 fn App() -> Element {
     let is_authenticated = use_signal(|| false);
     let mut current_company = use_signal(|| String::new());
+    let mut active_menu = use_signal(|| MenuState::Dashboard);
 
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
-        style { {SPINNER_CSS} }
         if is_authenticated() {
             div {
                 class: "flex h-screen text-white",
-                Sidebar { current_company }
-                MainArea { current_company }
+                Sidebar { current_company, active_menu }
+                MainArea { current_company, active_menu }
             }
         } else {
             Login { is_authenticated, current_company }
@@ -152,6 +123,7 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                                         match res.json::<serde_json::Value>().await {
                                             Ok(data) => {
                                                 if data["status"] == "success" {
+                                                    current_company.set(data["empresa"].as_str().unwrap_or("").to_string());
                                                     is_authenticated.set(true);
                                                 } else {
                                                     error_msg.set(Some("Credenciales inválidas".to_string()));
@@ -183,106 +155,49 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
 }
 
 #[component]
-fn Sidebar(current_company: Signal<String>) -> Element {
+fn Sidebar(current_company: Signal<String>, mut active_menu: Signal<MenuState>) -> Element {
     rsx! {
         div {
             class: "bg-slate-900 w-64 flex flex-col items-center justify-start p-4",
             div { class: "text-blue-500 font-bold text-2xl mb-8", "PYMZA" }
-            ul { class: "flex flex-col",
-                li { class: "p-3 rounded-lg hover:bg-slate-800 hover:text-white transition-colors",
-                    a { href: "#", class: "flex items-center",
-                        svg { class: "w-5 h-5 mr-3" }, "Dashboard" } }
-                li { class: "p-3 rounded-lg bg-blue-900/50 text-blue-400 hover:bg-slate-800 hover:text-white transition-colors",
-                    a { href: "#", class: "flex items-center",
-                        svg { class: "w-5 h-5 mr-3" }, "Evaluación" } }
-                li { class: "p-3 rounded-lg hover:bg-slate-800 hover:text-white transition-colors",
-                    a { href: "#", class: "flex items-center",
-                        svg { class: "w-5 h-5 mr-3" }, "Clientes" } }
-                li { class: "p-3 rounded-lg hover:bg-red-900/30 text-red-400 hover:text-white transition-colors",
-                    a { href: "#", class: "flex items-center",
-                        svg { class: "w-5 h-5 mr-3" }, "Red PYME" } }
+            div { class: "text-slate-400 text-xs mb-6 text-center px-2", "{current_company}" }
+            ul { class: "flex flex-col w-full gap-1",
+                li {
+                    class: format!("p-3 rounded-lg cursor-pointer flex items-center transition-colors {}",
+                        if active_menu() == MenuState::Dashboard { "bg-blue-900/50 text-blue-400" } else { "text-slate-400 hover:bg-slate-800 hover:text-white" }
+                    ),
+                    onclick: move |_| active_menu.set(MenuState::Dashboard),
+                    svg { class: "w-5 h-5 mr-3", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                        path { d: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" }
+                    "Dashboard"
+                }
+                li {
+                    class: format!("p-3 rounded-lg cursor-pointer flex items-center transition-colors {}",
+                        if active_menu() == MenuState::AltaCliente { "bg-blue-900/50 text-blue-400" } else { "text-slate-400 hover:bg-slate-800 hover:text-white" }
+                    ),
+                    onclick: move |_| active_menu.set(MenuState::AltaCliente),
+                    svg { class: "w-5 h-5 mr-3", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                        path { d: "M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" }
+                    }
+                    "Alta de Cliente"
+                }
+                li {
+                    class: format!("p-3 rounded-lg cursor-pointer flex items-center transition-colors {}",
+                        if active_menu() == MenuState::Cartera { "bg-blue-900/50 text-blue-400" } else { "text-slate-400 hover:bg-slate-800 hover:text-white" }
+                    ),
+                    onclick: move |_| active_menu.set(MenuState::Cartera),
+                    svg { class: "w-5 h-5 mr-3", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                        path { d: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" }
+                    }
+                    "Cartera"
+                }
             }
         }
     }
 }
 
 #[component]
-fn MainArea(current_company: Signal<String>) -> Element {
-    let mut active_tab = use_signal(|| TabState::OpenBanking);
-    let mut toast: Signal<Option<(String, String)>> = use_signal(|| None);
-    let mut document_id = use_signal(|| String::new());
-    let mut modal = use_signal(|| ModalState::Hidden);
-
-    // Toast element (computed outside rsx! to avoid macro nesting issues)
-    let toast_element = match toast() {
-        Some((kind, msg)) => {
-            let bg = match kind.as_str() {
-                "success" => "bg-green-600",
-                "error" => "bg-red-600",
-                _ => "bg-blue-600",
-            };
-            rsx! {
-                div {
-                    class: "fixed top-4 right-4 z-50 {bg} text-white px-6 py-4 rounded-xl shadow-xl flex items-center gap-3 min-w-[300px]",
-                    span { class: "flex-1 text-sm font-medium", "{msg}" }
-                    button {
-                        class: "text-white/70 hover:text-white text-lg leading-none",
-                        onclick: move |_| toast.set(None),
-                        "✕"
-                    }
-                }
-            }
-        },
-        None => rsx! {},
-    };
-
-    // Modal element (computed outside rsx!)
-    let modal_element = match modal() {
-        ModalState::Hidden => rsx! {},
-        ModalState::Loading => rsx! {
-            div { class: "fixed inset-0 z-40 flex items-center justify-center bg-black/60",
-                div { class: "bg-slate-800 rounded-2xl p-8 flex flex-col items-center gap-6 min-w-[320px] shadow-2xl border border-slate-700",
-                    div { class: "pymza-spinner" }
-                    div { class: "text-white text-lg font-medium", "Procesando solicitud..." }
-                }
-            }
-        },
-        ModalState::Success(msg) => rsx! {
-            div { class: "fixed inset-0 z-40 flex items-center justify-center bg-black/60",
-                div { class: "bg-slate-800 rounded-2xl p-8 flex flex-col items-center gap-6 min-w-[320px] shadow-2xl border border-slate-700",
-                    div { class: "pymza-pop w-16 h-16 rounded-full bg-green-500 flex items-center justify-center",
-                        svg { class: "w-8 h-8 text-white", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "3",
-                            path { d: "M5 13l4 4L19 7" }
-                        }
-                    }
-                    div { class: "text-white text-lg font-medium", "{msg}" }
-                    button {
-                        class: "bg-green-600 hover:bg-green-700 text-white px-8 py-2 rounded-lg transition-all",
-                        onclick: move |_| modal.set(ModalState::Hidden),
-                        "OK"
-                    }
-                }
-            }
-        },
-        ModalState::Error(msg) => rsx! {
-            div { class: "fixed inset-0 z-40 flex items-center justify-center bg-black/60",
-                div { class: "bg-slate-800 rounded-2xl p-8 flex flex-col items-center gap-6 min-w-[320px] shadow-2xl border border-slate-700",
-                    div { class: "pymza-pop w-16 h-16 rounded-full bg-red-500 flex items-center justify-center",
-                        svg { class: "w-8 h-8 text-white", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "3",
-                            path { d: "M6 18L18 6M6 6l12 12" }
-                        }
-                    }
-                    div { class: "text-white text-lg font-medium", "{msg}" }
-                    button {
-                        class: "bg-red-600 hover:bg-red-700 text-white px-8 py-2 rounded-lg transition-all",
-                        onclick: move |_| modal.set(ModalState::Hidden),
-                        "OK"
-                    }
-                }
-            }
-        },
-    };
-
+fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> Element {
     rsx! {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
@@ -307,163 +222,83 @@ fn MainArea(current_company: Signal<String>) -> Element {
                 }
             }
 
-            // Tabs
-            div {
-                class: "border-b border-slate-700 mb-6",
-                div { class: "flex justify-between items-center",
-                    div {
-                        class: format!("cursor-pointer p-1 {}", if active_tab() == TabState::OpenBanking { "text-blue-400 font-semibold border-b-2 border-blue-500" } else { "text-slate-400" }),
-                        onclick: move |_| active_tab.set(TabState::OpenBanking),
-                        "TAB 1: Open Banking"
-                    }
-                    div {
-                        class: format!("cursor-pointer p-1 {}", if active_tab() == TabState::Servicios { "text-blue-400 font-semibold border-b-2 border-blue-500" } else { "text-slate-400" }),
-                        onclick: move |_| active_tab.set(TabState::Servicios),
-                        "TAB 2: Servicios"
-                    }
-                    div {
-                        class: format!("cursor-pointer p-1 {}", if active_tab() == TabState::IneOcr { "text-blue-400 font-semibold border-b-2 border-blue-500" } else { "text-slate-400" }),
-                        onclick: move |_| active_tab.set(TabState::IneOcr),
-                        "TAB 3: INE/OCR"
-                    }
-                }
-            }
-
-            // Tab content
-            match active_tab() {
-                TabState::OpenBanking => rsx! {
-                    div { class: "grid grid-cols-2 gap-6 mt-6",
-                        div { class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
-                            div { class: "text-green-500 text-4xl font-bold mb-2", "820" }
-                            div { class: "text-green-500 font-semibold", "Riesgo Bajo" }
-                        }
-                        div { class: "bg-slate-900 p-6 rounded-xl border border-slate-700 flex flex-col items-center justify-center",
-                            ul { class: "list-none",
-                                li { class: "text-slate-400 mb-2", "CFE (Al día)" }
-                                li { class: "text-slate-400 mb-2", "Agua (Al día)" }
-                                li { class: "text-slate-400 mb-2", "Telcel (5 días de atraso)" }
-                            }
-                        }
-                    }
-                },
-                TabState::Servicios => rsx! {
-                    div { class: "border-2 border-dashed border-slate-600 rounded-xl p-12 mt-6 flex items-center justify-center",
-                        div { class: "text-slate-400 text-lg", "Próximamente" }
-                    }
-                },
-                TabState::IneOcr => rsx! {
-                    div {
-                        class: "flex flex-col items-center justify-center w-full max-w-2xl h-64 border-2 border-dashed border-slate-600 bg-slate-900/50 rounded-2xl hover:border-blue-500 hover:bg-slate-800/50 transition-all cursor-pointer",
-                        div { class: "text-slate-300 text-sm mb-4", "Validación de Identidad (Prevención de Fraude)" }
-                        div { class: "flex flex-col items-center justify-center w-full h-full",
-                            div { class: "text-slate-400 text-lg", "Arrastra el anverso de la INE aquí o haz clic para explorar" }
-                            div { class: "text-slate-400 text-sm mt-2", "Formatos soportados: JPG, PNG, PDF" }
-                        }
-                        button {
-                            class: "bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-all",
-                            onclick: move |_| {
-                                spawn(async move {
-                                    match http_client().post("http://127.0.0.1:3000/api/ocr").send().await {
-                                        Ok(response) => {
-                                            if let Ok(result) = response.json::<serde_json::Value>().await {
-                                                if let Some(id) = result["id"].as_str() {
-                                                    document_id.set(id.to_string());
-                                                }
-                                                let name = result["extracted_name"].as_str().unwrap_or("desconocido");
-                                                toast.set(Some(("success".to_string(), format!("OCR completado: {}", name))));
-                                                spawn(async move {
-                                                    TimeoutFuture::new(12000).await;
-                                                    toast.set(None);
-                                                });
-                                            } else {
-                                                toast.set(Some(("error".to_string(), "Error al leer respuesta JSON".to_string())));
-                                                spawn(async move {
-                                                    TimeoutFuture::new(12000).await;
-                                                    toast.set(None);
-                                                });
-                                            }
-                                        },
-                                        Err(e) => {
-                                            toast.set(Some(("error".to_string(), format!("Error de conexión OCR: {}", e))));
-                                            spawn(async move {
-                                                TimeoutFuture::new(12000).await;
-                                                toast.set(None);
-                                            });
-                                        }
-                                    };
-                                });
-                            },
-                            "Iniciar Escaneo OCR"
-                        }
-                    }
-                },
-            }
-
-            // Action bar
-            div {
-                class: "flex justify-end gap-4 mt-8",
-
-                button {
-                    class: "border border-blue-500 text-blue-500 px-4 py-2 rounded-lg hover:bg-blue-500 hover:text-white",
-                    onclick: move |_| {
-                        let id = document_id();
-                        if id.is_empty() {
-                            toast.set(Some(("error".to_string(), "No hay ID disponible. Ejecuta OCR primero.".to_string())));
-                            spawn(async move {
-                                TimeoutFuture::new(12000).await;
-                                toast.set(None);
-                            });
-                            return;
-                        }
-                        modal.set(ModalState::Loading);
-                        spawn(async move {
-                            if let Ok(res) = http_client().post("http://127.0.0.1:3000/api/update_status")
-                                .json(&serde_json::json!({"id": id, "estado": "Rechazado"}))
-                                .send().await {
-                                match res.status().is_success() {
-                                    true => modal.set(ModalState::Error("Solicitud Rechazada".to_string())),
-                                    false => modal.set(ModalState::Error("Error del servidor".to_string())),
+            match active_menu() {
+                MenuState::Dashboard => rsx! {
+                    div { class: "grid grid-cols-3 gap-6",
+                        div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
+                            div { class: "flex items-center gap-3 mb-4",
+                                svg { class: "w-6 h-6 text-blue-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                                    path { d: "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" }
                                 }
-                            } else {
-                                modal.set(ModalState::Error("Error de conexión".to_string()));
+                                div { class: "text-slate-400 text-sm font-medium", "Créditos Activos" }
                             }
-                        });
-                    },
-                    "Rechazar"
-                }
-
-                button {
-                    class: "bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600",
-                    onclick: move |_| {
-                        let id = document_id();
-                        if id.is_empty() {
-                            toast.set(Some(("error".to_string(), "No hay ID disponible. Ejecuta OCR primero.".to_string())));
-                            spawn(async move {
-                                TimeoutFuture::new(12000).await;
-                                toast.set(None);
-                            });
-                            return;
+                            div { class: "text-3xl font-bold text-white", "0" }
                         }
-                        modal.set(ModalState::Loading);
-                        spawn(async move {
-                            if let Ok(res) = http_client().post("http://127.0.0.1:3000/api/update_status")
-                                .json(&serde_json::json!({"id": id, "estado": "Aprobado"}))
-                                .send().await {
-                                match res.status().is_success() {
-                                    true => modal.set(ModalState::Success("¡Solicitud Aprobada!".to_string())),
-                                    false => modal.set(ModalState::Error("Error del servidor".to_string())),
+                        div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
+                            div { class: "flex items-center gap-3 mb-4",
+                                svg { class: "w-6 h-6 text-green-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                                    path { d: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" }
                                 }
-                            } else {
-                                modal.set(ModalState::Error("Error de conexión".to_string()));
+                                div { class: "text-slate-400 text-sm font-medium", "Capital Prestado" }
                             }
-                        });
-                    },
-                    "Aprobar"
-                }
+                            div { class: "text-3xl font-bold text-white", "$0 MXN" }
+                        }
+                        div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
+                            div { class: "flex items-center gap-3 mb-4",
+                                svg { class: "w-6 h-6 text-yellow-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                                    path { d: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" }
+                                }
+                                div { class: "text-slate-400 text-sm font-medium", "Próximos Cobros" }
+                            }
+                            div { class: "text-3xl font-bold text-white", "0" }
+                        }
+                    }
+                },
+                MenuState::AltaCliente => rsx! {
+                    div {
+                        div { class: "text-xl font-bold text-white mb-6", "Validación de Nuevo Cliente" }
+                        div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6 max-w-lg",
+                            div { class: "text-slate-400 text-sm mb-4",
+                                "Ingresa el CURP o ID del cliente para verificar si ya existe en el ecosistema Red PYMZA."
+                            }
+                            div { class: "flex gap-3",
+                                input {
+                                    class: "flex-1 bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
+                                    placeholder: "CURP o ID del Cliente",
+                                }
+                                button {
+                                    class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors whitespace-nowrap",
+                                    "Buscar en Red PYMZA"
+                                }
+                            }
+                        }
+                    }
+                },
+                MenuState::Cartera => rsx! {
+                    div {
+                        div { class: "text-xl font-bold text-white mb-6", "Cartera de Clientes" }
+                        div { class: "bg-slate-900 rounded-xl border border-slate-700 overflow-hidden",
+                            table { class: "w-full text-left",
+                                thead {
+                                    tr { class: "border-b border-slate-700 bg-slate-800/50",
+                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Nombre del Cliente" }
+                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Producto" }
+                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Monto" }
+                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Estado" }
+                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Acciones" }
+                                    }
+                                }
+                                tbody {
+                                    tr {
+                                        class: "border-b border-slate-700",
+                                        td { colspan: "5", class: "px-6 py-8 text-center text-slate-500", "No hay clientes registrados" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
             }
-
-            {toast_element}
-            {modal_element}
         }
     }
 }
