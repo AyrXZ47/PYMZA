@@ -2,7 +2,7 @@ mod db;
 mod models;
 
 use axum::{
-    extract::State,
+    extract::{State, Path},
     routing::{post, get},
     Json,
     Router,
@@ -31,6 +31,7 @@ async fn main() {
         .route("/api/update_status", post(update_status))
         .route("/api/ocr", post(process_ocr))
         .route("/api/login", post(login_empresa)) // New route for login
+        .route("/api/clientes/:curp", get(buscar_cliente)) // New route for cliente search
         .layer(CorsLayer::permissive())
         .with_state(db_client);
 
@@ -83,6 +84,33 @@ async fn login_empresa(
             Json(serde_json::json!({
                 "status": "error",
                 "message": "Credenciales inválidas"
+            }))
+        }
+    }
+}
+
+async fn buscar_cliente(
+    State(client): State<mongodb::Client>,
+    axum::extract::Path(curp): axum::extract::Path<String>
+) -> Json<serde_json::Value> {
+    let coll = client.database("pymza").collection::<models::cliente::Cliente>("clientes");
+    
+    match coll.find_one(
+        mongodb::bson::doc! { "curp": curp },
+        None
+    ).await {
+        Ok(Some(cliente)) => Json(serde_json::json!({
+            "status": "success",
+            "cliente": cliente
+        })),
+        Ok(None) => Json(serde_json::json!({
+            "status": "not_found",
+            "message": "Cliente no existe en la red PYMZA"
+        })),
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({
+                "status": "error"
             }))
         }
     }
