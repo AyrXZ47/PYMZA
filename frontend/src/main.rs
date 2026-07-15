@@ -199,6 +199,10 @@ fn Sidebar(current_company: Signal<String>, mut active_menu: Signal<MenuState>) 
 
 #[component]
 fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> Element {
+    let mut curp_input = use_signal(|| String::new());
+    let mut search_result = use_signal(|| None::<serde_json::Value>);
+    let mut search_status = use_signal(|| String::new());
+
     rsx! {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
@@ -266,13 +270,121 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 input {
                                     class: "flex-1 bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
                                     placeholder: "CURP o ID del Cliente",
+                                    value: curp_input(),
+                                    oninput: move |e| curp_input.set(e.value()),
                                 }
                                 button {
                                     class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors whitespace-nowrap",
+                                    onclick: move |_| {
+                                        let curp = curp_input();
+                                        if curp.trim().is_empty() {
+                                            search_status.set("Ingresa un CURP o ID válido".to_string());
+                                            return;
+                                        }
+                                        search_result.set(None);
+                                        search_status.set("Buscando...".to_string());
+                                        spawn(async move {
+                                            let url = format!("http://127.0.0.1:3000/api/clientes/{}", curp);
+                                            match http_client().get(&url).send().await {
+                                                Ok(res) => {
+                                                    match res.json::<serde_json::Value>().await {
+                                                        Ok(data) => {
+                                                            match data["status"].as_str() {
+                                                                Some("success") => {
+                                                                    if let Some(cliente) = data.get("cliente") {
+                                                                        search_result.set(Some(cliente.clone()));
+                                                                        search_status.set(String::new());
+                                                                    } else {
+                                                                        search_status.set("Respuesta inesperada del servidor".to_string());
+                                                                    }
+                                                                }
+                                                                Some("not_found") => {
+                                                                    search_result.set(None);
+                                                                    search_status.set("Cliente nuevo. Iniciar escaneo de INE (KYC)".to_string());
+                                                                }
+                                                                _ => {
+                                                                    search_status.set("Respuesta inesperada del servidor".to_string());
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(_) => {
+                                                            search_status.set("Error al procesar la respuesta".to_string());
+                                                        }
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    search_status.set("Error de conexión".to_string());
+                                                }
+                                            }
+                                        });
+                                    },
                                     "Buscar en Red PYMZA"
                                 }
                             }
                         }
+
+                        // Result card
+                        {match search_result() {
+                            Some(cliente) => rsx! {
+                                div {
+                                    class: "mt-6 bg-green-900/20 border border-green-700/50 rounded-xl p-6 max-w-lg",
+                                    div { class: "flex items-center gap-2 mb-4",
+                                        svg { class: "w-6 h-6 text-green-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                                            path { d: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" }
+                                        }
+                                        div { class: "text-green-400 font-semibold", "¡Cliente encontrado en Red PYMZA!" }
+                                    }
+                                    div { class: "grid grid-cols-2 gap-4",
+                                        div {
+                                            div { class: "text-slate-400 text-xs uppercase tracking-wider mb-1", "Nombre Completo" }
+                                            div { class: "text-white font-medium", "{cliente["nombre_completo"].as_str().unwrap_or("—")}" }
+                                        }
+                                        div {
+                                            div { class: "text-slate-400 text-xs uppercase tracking-wider mb-1", "Score Crediticio" }
+                                            div {
+                                                class: format!("text-3xl font-bold {}", {
+                                                    let s = cliente["score"].as_i64().unwrap_or(0);
+                                                    if s > 700 { "text-green-400" } else { "text-yellow-400" }
+                                                }),
+                                                "{cliente["score"].as_i64().unwrap_or(0)}"
+                                            }
+                                        }
+                                        div {
+                                            div { class: "text-slate-400 text-xs uppercase tracking-wider mb-1", "Nivel de Riesgo" }
+                                            div { class: "text-white font-medium", "{cliente["nivel_riesgo"].as_str().unwrap_or("—")}" }
+                                        }
+                                    }
+                                    div { class: "mt-6",
+                                        button {
+                                            class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors",
+                                            "Crear Plan de Pagos"
+                                        }
+                                    }
+                                }
+                            },
+                            None => {
+                                let status = search_status();
+                                if !status.is_empty() {
+                                    rsx! {
+                                        div {
+                                            class: "mt-6 bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-6 max-w-lg",
+                                            div { class: "flex items-center gap-2 mb-3",
+                                                svg { class: "w-6 h-6 text-yellow-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                                                    path { d: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" }
+                                                }
+                                                div { class: "text-yellow-400 font-semibold", "{status}" }
+                                            }
+                                            button {
+                                                class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors",
+                                                "Subir INE"
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    rsx! {}
+                                }
+                            }
+                        }}
                     }
                 },
                 MenuState::Cartera => rsx! {
