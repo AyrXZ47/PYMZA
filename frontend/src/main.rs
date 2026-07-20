@@ -208,6 +208,11 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     let mut plan_producto = use_signal(|| String::new());
     let mut plan_monto = use_signal(|| String::new());
     let mut plan_plazo = use_signal(|| "3".to_string());
+    let mut modal_step = use_signal(|| 0u8);
+    let mut eval_estado = use_signal(|| String::new());
+    let mut eval_mensualidad = use_signal(|| 0.0);
+    let mut consideraciones = use_signal(|| String::new());
+    let mut terms_accepted = use_signal(|| false);
 
     // Signals para Alta de Cliente
     let mut alta_nombre = use_signal(|| String::new());
@@ -287,7 +292,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     onclick: move |_| {
                                         let curp = curp_input();
                                         search_result.set(None);
-                                        search_status.set("Buscando...".to_string());
+                                        search_status.set(String::new());
                                         show_plan_modal.set(false);
                                         spawn(async move {
                                             match http_client()
@@ -299,8 +304,10 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                     if res.status().is_success() {
                                                         match res.json::<serde_json::Value>().await {
                                                             Ok(cliente) => {
-                                                                search_result.set(Some(cliente));
-                                                            }
+                                                                 if cliente.is_object() {
+                                                                     search_result.set(Some(cliente));
+                                                                 }
+                                                             }
                                                             Err(_) => {
                                                                 search_status.set("Error al procesar respuesta".to_string());
                                                             }
@@ -393,45 +400,160 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                             if show_plan_modal() {
                                 div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-50",
                                     div { class: "bg-slate-900 border border-slate-700 p-6 rounded-xl w-full max-w-md",
-                                        h2 { class: "text-xl font-bold text-white mb-4", "Configurar Plan de Pagos" }
-                                        div { class: "flex flex-col gap-4",
-                                            label { class: "text-slate-400 text-sm", "Producto o Servicio" }
-                                            input { 
-                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500", 
-                                                value: plan_producto(), 
-                                                oninput: move |e| plan_producto.set(e.value()) 
-                                            }
-                                            
-                                            label { class: "text-slate-400 text-sm", "Monto Total ($)" }
-                                            input { 
-                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500", 
-                                                type: "number", 
-                                                value: plan_monto(), 
-                                                oninput: move |e| plan_monto.set(e.value()) 
-                                            }
-                                            
-                                            label { class: "text-slate-400 text-sm", "Plazo (Meses)" }
-                                            select { 
-                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500", 
-                                                value: plan_plazo(), 
-                                                onchange: move |e| plan_plazo.set(e.value()),
-                                                option { value: "3", "3" }
-                                                option { value: "6", "6" }
-                                                option { value: "9", "9" }
-                                                option { value: "12", "12" }
-                                            }
-                                        }
-                                        div { class: "flex justify-end gap-3 mt-6",
-                                            button { 
-                                                class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-lg", 
-                                                onclick: move |_| show_plan_modal.set(false), 
-                                                "Cancelar" 
-                                            }
-                                            button { 
-                                                class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg", 
-                                                onclick: move |_| { println!("Evaluando..."); }, 
-                                                "Evaluar Crédito" 
-                                            }
+                                        match modal_step() {
+                                            0 => rsx! {
+                                                h2 { class: "text-xl font-bold text-white mb-4", "Configurar Plan de Pagos" }
+                                                div { class: "flex flex-col gap-4",
+                                                    label { class: "text-slate-400 text-sm", "Producto o Servicio" }
+                                                    input {
+                                                        class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                                        value: plan_producto(),
+                                                        oninput: move |e| plan_producto.set(e.value())
+                                                    }
+
+                                                    label { class: "text-slate-400 text-sm", "Monto Total ($)" }
+                                                    input {
+                                                        class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                                        type: "number",
+                                                        value: plan_monto(),
+                                                        oninput: move |e| plan_monto.set(e.value())
+                                                    }
+
+                                                    label { class: "text-slate-400 text-sm", "Plazo (Meses)" }
+                                                    select {
+                                                        class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                                        value: plan_plazo(),
+                                                        onchange: move |e| plan_plazo.set(e.value()),
+                                                        option { value: "3", "3" }
+                                                        option { value: "6", "6" }
+                                                        option { value: "9", "9" }
+                                                        option { value: "12", "12" }
+                                                    }
+                                                }
+                                                div { class: "flex justify-end gap-3 mt-6",
+                                                    button {
+                                                        class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-lg",
+                                                        onclick: move |_| { show_plan_modal.set(false); modal_step.set(0); },
+                                                        "Cancelar"
+                                                    }
+                                                    button {
+                                                        class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg",
+                                                        onclick: move |_| {
+                                                            let curp = curp_input();
+                                                            let monto = plan_monto();
+                                                            let plazo = plan_plazo();
+                                                            modal_step.set(1);
+                                                            spawn(async move {
+                                                                let body = serde_json::json!({
+                                                                    "curp": curp,
+                                                                    "monto": monto,
+                                                                    "plazo": plazo,
+                                                                });
+                                                                match http_client().post("http://127.0.0.1:3000/api/creditos/evaluar")
+                                                                    .json(&body)
+                                                                    .send()
+                                                                    .await
+                                                                {
+                                                                    Ok(res) => {
+                                                                        match res.json::<serde_json::Value>().await {
+                                                                            Ok(data) => {
+                                                                                eval_estado.set(data["estado"].as_str().unwrap_or("").to_string());
+                                                                                eval_mensualidad.set(data["mensualidad"].as_f64().unwrap_or(0.0));
+                                                                                consideraciones.set(data["consideraciones"].as_str().unwrap_or("").to_string());
+                                                                            }
+                                                                            Err(_) => {
+                                                                                eval_estado.set("Error".to_string());
+                                                                                consideraciones.set("Error al procesar la evaluación".to_string());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(_) => {
+                                                                        eval_estado.set("Error".to_string());
+                                                                        consideraciones.set("Error de conexión con el servidor".to_string());
+                                                                    }
+                                                                }
+                                                                modal_step.set(2);
+                                                            });
+                                                        },
+                                                        "Evaluar Crédito"
+                                                    }
+                                                }
+                                            },
+                                            1 => rsx! {
+                                                div { class: "flex flex-col items-center justify-center py-12",
+                                                    div { class: "text-blue-400 text-lg font-semibold animate-pulse", "Evaluando riesgo en Red PYMZA..." }
+                                                }
+                                            },
+                                            2 => rsx! {
+                                                h2 { class: "text-xl font-bold text-white mb-4", "Resultado de Evaluación" }
+                                                div { class: "flex flex-col gap-4",
+                                                    div {
+                                                        class: format!("text-lg font-bold {}", if eval_estado() == "Aprobado" { "text-green-400" } else { "text-red-400" }),
+                                                        "{eval_estado}"
+                                                    }
+                                                    div {
+                                                        div { class: "text-slate-400 text-sm", "Mensualidad Estimada" }
+                                                        div { class: "text-2xl font-bold text-white", "${eval_mensualidad} MXN" }
+                                                    }
+                                                    div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4 max-h-40 overflow-y-auto",
+                                                        div { class: "text-slate-400 text-sm mb-2", "Consideraciones" }
+                                                        div { class: "text-slate-200 text-sm whitespace-pre-wrap", "{consideraciones}" }
+                                                    }
+                                                    label { class: "flex items-start gap-2 text-slate-300 text-sm cursor-pointer",
+                                                        input {
+                                                            type: "checkbox",
+                                                            class: "mt-1",
+                                                            checked: terms_accepted(),
+                                                            oninput: move |e| terms_accepted.set(e.checked()),
+                                                        }
+                                                        "He leído las consideraciones y asumo el riesgo de autorizar este crédito."
+                                                    }
+                                                }
+                                                div { class: "flex justify-end gap-3 mt-6",
+                                                    button {
+                                                        class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-lg",
+                                                        onclick: move |_| { show_plan_modal.set(false); modal_step.set(0); },
+                                                        "Cerrar"
+                                                    }
+                                                    button {
+                                                        class: format!("text-white font-semibold px-4 py-2 rounded-lg {}", if terms_accepted() { "bg-green-600 hover:bg-green-700" } else { "bg-gray-600 cursor-not-allowed" }),
+                                                        disabled: !terms_accepted(),
+                                                        onclick: move |_| {
+                                                            let curp = curp_input();
+                                                            let producto = plan_producto();
+                                                            let monto = plan_monto();
+                                                            let plazo = plan_plazo();
+                                                            spawn(async move {
+                                                                let body = serde_json::json!({
+                                                                    "curp": curp,
+                                                                    "producto": producto,
+                                                                    "monto": monto,
+                                                                    "plazo": plazo,
+                                                                });
+                                                                match http_client().post("http://127.0.0.1:3000/api/creditos/autorizar")
+                                                                    .json(&body)
+                                                                    .send()
+                                                                    .await
+                                                                {
+                                                                    Ok(res) => {
+                                                                        if res.status().is_success() {
+                                                                            show_plan_modal.set(false);
+                                                                            modal_step.set(0);
+                                                                            plan_producto.set(String::new());
+                                                                            plan_monto.set(String::new());
+                                                                            plan_plazo.set("3".to_string());
+                                                                            terms_accepted.set(false);
+                                                                        }
+                                                                    }
+                                                                    Err(_) => {}
+                                                                }
+                                                            });
+                                                        },
+                                                        "Autorizar Crédito"
+                                                    }
+                                                }
+                                            },
+                                            _ => rsx! {},
                                         }
                                     }
                                 }
