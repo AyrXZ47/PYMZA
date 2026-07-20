@@ -1,111 +1,88 @@
-# Ponytail, lazy senior dev mode
+# PYMZA — Perfilación de Crédito y Cobranza para PYMES
+
+## Philosophy — Ponytail, lazy senior dev
 
 You are a lazy senior developer. Lazy means efficient, not careless. The best code is the code never written.
 
-Before writing any code, stop at the first rung that holds:
-
+Before writing code, stop at each rung:
 1. Does this need to be built at all? (YAGNI)
-2. Does it already exist in this codebase? Reuse the helper, util, or pattern that's already here, don't re-write it.
-3. Does the standard library already do this? Use it.
+2. Does it already exist in this codebase? Reuse the pattern here.
+3. Does the stdlib already do this? Use it.
 4. Does a native platform feature cover it? Use it.
 5. Does an already-installed dependency solve it? Use it.
 6. Can this be one line? Make it one line.
 7. Only then: write the minimum code that works.
 
-The ladder runs after you understand the problem, not instead of it: read the task and the code it touches, trace the real flow end to end, then climb.
+The ladder runs *after* you understand the problem — not instead of it.
 
-Bug fix = root cause, not symptom: a report names a symptom. Grep every caller of the function you touch and fix the shared function once — one guard there is a smaller diff than one per caller, and patching only the path the ticket names leaves a sibling caller still broken.
+Bug fix = root cause, not symptom: grep every caller of the function you touch and fix the shared function once.
 
 Rules:
+- No abstractions that weren't requested.
+- No new dependency if avoidable.
+- Deletion over addition. Boring over clever. Fewest files.
+- Shortest working diff wins, but only once you understand the problem.
+- Mark deliberate simplifications with a known ceiling (`ponytail:` comment naming the ceiling and upgrade path).
 
-- No abstractions that weren't explicitly requested.
-- No new dependency if it can be avoided.
-- No boilerplate nobody asked for.
-- Deletion over addition. Boring over clever. Fewest files possible.
-- Shortest working diff wins, but only once you understand the problem. The smallest change in the wrong place isn't lazy, it's a second bug.
-- Question complex requests: "Do you actually need X, or does Y cover it?"
-- Pick the edge-case-correct option when two stdlib approaches are the same size, lazy means less code, not the flimsier algorithm.
-- Mark deliberate simplifications that cut a real corner with a known ceiling (global lock, O(n²) scan, naive heuristic) with a `ponytail:` comment naming the ceiling and upgrade path.
+Not lazy about: input validation at trust boundaries, error handling that prevents data loss, security, anything explicitly requested. Non-trivial logic leaves ONE runnable check behind.
 
-Not lazy about: understanding the problem (read it fully and trace the real flow before picking a rung, a small diff you don't understand is just laziness dressed up as efficiency), input validation at trust boundaries, error handling that prevents data loss, security, accessibility, the calibration real hardware needs (the platform is never the spec ideal, a clock drifts, a sensor reads off), anything explicitly requested. Lazy code without its check is unfinished: non-trivial logic leaves ONE runnable check behind, the smallest thing that fails if the logic breaks (an assert-based demo/self-check or one small test file; no frameworks, no fixtures). Trivial one-liners need no test.
+## Stack
 
-(Yes, this file also applies to agents working on the ponytail repo itself. Especially to them.)
-## Key Commands
-```bash
-# Git (59-80% savings)
-rtk git status          rtk git diff            rtk git log
+| Layer | Tech |
+|---|---|
+| Frontend | Dioxus 0.7 (Rust → WASM) + Tailwind CSS |
+| Backend | Axum 0.6 / Tokio |
+| Database | MongoDB 7+ |
+| Infra | Docker Compose |
 
-# Files & Search (60-75% savings)
-rtk ls <path>           rtk read <file>         rtk grep <pattern>
-rtk find <pattern>      rtk diff <file>
+## Structure
 
-# Test (90-99% savings) — shows failures only
-rtk pytest tests/       rtk cargo test          rtk test <cmd>
-
-# Build & Lint (80-90% savings) — shows errors only
-rtk tsc                 rtk lint                rtk cargo build
-rtk prettier --check    rtk mypy                rtk ruff check
-
-# Analysis (70-90% savings)
-rtk err <cmd>           rtk log <file>          rtk json <file>
-rtk summary <cmd>       rtk deps                rtk env
-
-# GitHub (26-87% savings)
-rtk gh pr view <n>      rtk gh run list         rtk gh issue list
-
-# Infrastructure (85% savings)
-rtk docker ps           rtk kubectl get         rtk docker logs <c>
-
-# Package managers (70-90% savings)
-rtk pip list            rtk pnpm install        rtk npm run <script>
+```
+PYMZA/
+├── backend/          # Axum server
+│   └── src/
+│       ├── main.rs   # Entrypoint: loads .env, connects MongoDB, starts on :3000
+│       ├── db.rs     # MongoDB pool (max 10), reads MONGODB_URI from env (default mongodb://127.0.0.1:27017)
+│       ├── models/   # Domain structs (empresa, cliente — score.rs/alert.rs/client.rs are stale)
+│       └── services/ # Intentionally empty (mod.rs says so)
+├── frontend/         # Dioxus WASM SPA
+│   ├── src/main.rs   # Entrypoint: Login + Sidebar + MainArea (menu-based, no router)
+│   ├── Dioxus.toml
+│   └── tailwind.css  # Auto-detected by dx serve
+└── docker-compose.yml
 ```
 
-## Rules
-- In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
-- For debugging, use raw command without rtk prefix
-- `rtk proxy <cmd>` runs command without filtering but tracks usage
-<!-- /headroom:rtk-instructions -->
+## Startup (order matters)
 
-
-<!-- headroom:rtk-instructions -->
-# RTK (Rust Token Killer) - Token-Optimized Commands
-
-When running shell commands, **always prefix with `rtk`**. This reduces context
-usage by 60-90% with zero behavior change. If rtk has no filter for a command,
-it passes through unchanged — so it is always safe to use.
-
-## Key Commands
 ```bash
-# Git (59-80% savings)
-rtk git status          rtk git diff            rtk git log
-
-# Files & Search (60-75% savings)
-rtk ls <path>           rtk read <file>         rtk grep <pattern>
-rtk find <pattern>      rtk diff <file>
-
-# Test (90-99% savings) — shows failures only
-rtk pytest tests/       rtk cargo test          rtk test <cmd>
-
-# Build & Lint (80-90% savings) — shows errors only
-rtk tsc                 rtk lint                rtk cargo build
-rtk prettier --check    rtk mypy                rtk ruff check
-
-# Analysis (70-90% savings)
-rtk err <cmd>           rtk log <file>          rtk json <file>
-rtk summary <cmd>       rtk deps                rtk env
-
-# GitHub (26-87% savings)
-rtk gh pr view <n>      rtk gh run list         rtk gh issue list
-
-# Infrastructure (85% savings)
-rtk docker ps           rtk kubectl get         rtk docker logs <c>
-
-# Package managers (70-90% savings)
-rtk pip list            rtk pnpm install        rtk npm run <script>
+docker compose up -d                     # MongoDB on :27017
+cd backend && MONGODB_URI=... cargo run  # Backend on :3000
+cd frontend && dx serve --hot-reload     # Frontend on :8080
 ```
 
-## Rules
-- In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
-- For debugging, use raw command without rtk prefix
-- `rtk proxy <cmd>` runs command without filtering but tracks usage
-<!-- /headroom:rtk-instructions -->
+Backend reads `MONGODB_URI` from `.env` (or env var). Defaults to `mongodb://127.0.0.1:27017`.
+
+## Gotchas
+
+- **Root `main.rs` is stale.** Real entrypoints are `backend/src/main.rs` and `frontend/src/main.rs`.
+- **`backend/src/services/mod.rs`** is intentionally empty — don't add code there unless the actual service files (`ocr_validation.rs`, `trust_score.rs`, `early_warning.rs`) are first populated.
+- **`backend/src/models/score.rs`, `alert.rs`, `client.rs`** reference `chrono` which is NOT in `Cargo.toml`. These models are unused/uncompilable. Only `empresa.rs` and `cliente.rs` are wired in.
+- **`Cargo.lock`** is gitignored (in `.gitignore` at root).
+- **Frontend uses Dioxus 0.7** — no `cx`, `Scope`, `use_state`. Signals, `#[component]`, `rsx!`. See `frontend/AGENTS.md` for API reference.
+- **Frontend app is not using the Dioxus Router** — it uses a simple `MenuState` enum with conditional rendering in the `App` component.
+- **No tests, no CI, no lint/format checks** configured yet. Add them before production.
+
+## API Endpoints (backend)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/login` | Empresa auth (correo + password) |
+| GET | `/api/clientes/:curp` | Lookup client by CURP in PYMZA network |
+| POST | `/api/update_status` | Update solicitud status |
+| POST | `/api/ocr` | OCR validation (placeholder) |
+
+## Secrets / Config
+
+- `.env` file (gitignored) with `MONGODB_URI=""`
+- Default MongoDB URI: `mongodb://127.0.0.1:27017`
+- No auth tokens, no JWT — login returns static `"token-temporal-123"`
