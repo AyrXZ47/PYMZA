@@ -10,7 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
-use models::credito::{SolicitudCredito, PlanPago};
+use models::credito::{EvaluarReq, AutorizarReq, PlanPago};
 
 #[derive(Deserialize, Serialize)]
 struct UpdateStatusPayload { id: String, estado: String }
@@ -31,9 +31,10 @@ async fn main() {
     let app = Router::new()
         .route("/api/update_status", post(update_status))
         .route("/api/ocr", post(process_ocr))
-        .route("/api/login", post(login_empresa)) // New route for login
-        .route("/api/clientes/:curp", get(buscar_cliente)) // New route for cliente search
-        .route("/api/evaluar", post(evaluar_credito)) // New route for credit evaluation
+        .route("/api/login", post(login_empresa))
+        .route("/api/clientes/:curp", get(buscar_cliente))
+        .route("/api/creditos/evaluar", post(evaluar_credito))
+        .route("/api/creditos/autorizar", post(autorizar_credito))
         .layer(CorsLayer::permissive())
         .with_state(db_client);
 
@@ -120,7 +121,7 @@ async fn buscar_cliente(
 
 async fn evaluar_credito(
     State(client): State<mongodb::Client>,
-    Json(payload): Json<SolicitudCredito>
+    Json(payload): Json<EvaluarReq>
 ) -> Json<serde_json::Value> {
     let coll_clientes = client.database("pymza").collection::<models::cliente::Cliente>("clientes");
     
@@ -135,30 +136,17 @@ async fn evaluar_credito(
             let capacidad_pago = if cliente.score > 700 { 5000.0 } else { 2000.0 };
             let estado = if pago_mensual <= capacidad_pago { "Aprobado" } else { "Rechazado" };
             
-            let plan_pago = PlanPago {
-                empresa: payload.empresa_logueada,
-                cliente_curp: payload.curp,
-                producto: payload.producto,
-                monto_total: payload.monto,
-                plazo_meses: payload.plazo_meses,
-                pago_mensual,
-                estado: estado.to_string(),
-                fecha: "2026-07-20".to_string(), // Fecha quemada según instrucciones
+            let consideraciones = if estado == "Aprobado" {
+                "El cliente tiene capacidad de pago suficiente para este plazo."
+            } else {
+                "El pago mensual excede la capacidad recomendada según el Score."
             };
-
-            let coll_planes = client.database("pymza").collection::<PlanPago>("planes_pago");
-            if let Err(e) = coll_planes.insert_one(plan_pago, None).await {
-                eprintln!("🚨 ERROR AL GUARDAR PLAN DE PAGO: {:?}", e);
-                return Json(serde_json::json!({
-                    "status": "error",
-                    "message": "Error al guardar el plan de pago"
-                }));
-            }
 
             Json(serde_json::json!({
                 "status": "success",
-                "resultado": estado,
-                "pago_mensual": pago_mensual
+                "estado": estado,
+                "pago_mensual": pago_mensual,
+                "consideraciones": consideraciones
             }))
         },
         Ok(None) => Json(serde_json::json!({
@@ -173,4 +161,31 @@ async fn evaluar_credito(
             }))
         }
     }
+}
+
+async fn autorizar_credito(
+    State(client): State<mongodb::Client>,
+    Json(payload): Json<AutorizarReq>
+) -> Json<serde_json::Value> {
+    let plan_pago = PlanPago {
+        empresa: payload.empresa,
+        cliente_curp: payload.cliente_curp,
+        producto: payload.producto,
+        monto_total: payload.monto_total,
+        plazo_meses: payload.plazo_meses,
+        pago_mensual: payload.pago_mensual,
+        estado: "Activo".to_string(),
+        fecha: "2026-07-20".to_string(),
+    };
+
+    let coll_planes = client.database("pymza").collection::<PlanPago>("planes_pago");
+    if let Err(e) = coll_planes.insert_one(plan_pago, None).await {
+        eprintln!("🚨 ERROR AL GUARDAR PLAN DE PAGO: {:?}", e);
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Error al guardar el plan de pago"
+        }));
+    }
+
+    Json(serde_json::json!({"status": "success"}))
 }
