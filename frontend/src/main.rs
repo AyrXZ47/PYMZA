@@ -317,3 +317,66 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     div { class: "text-yellow-400 font-semibold mb-4", "{status}" }
                                     button {
                                         class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg",
+                                        onclick: move |_| show_plan_modal.set(true),
+                                        "Continuar"
+                                    }
+                                }
+                            }
+
+                            // Modal de Plan de Pagos
+                            if show_plan_modal() {
+                                div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-50",
+                                    div { class: "bg-slate-900 border border-slate-700 p-6 rounded-xl w-full max-w-md",
+                                        h2 { class: "text-xl font-bold text-white mb-4", "Configurar Plan de Pagos" }
+                                        div { class: "flex flex-col gap-4",
+                                            label { class: "text-slate-400 text-sm", "Producto o Servicio" }
+                                            input { 
+                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500", 
+                                                value: plan_producto(), 
+                                                oninput: move |e| plan_producto.set(e.value()) 
+                                            }
+                                            
+                                            label { class: "text-slate-400 text-sm", "Monto Total ($)" }
+                                            input { 
+                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500", 
+                                                type: "number", 
+                                                value: plan_monto(), 
+                                                oninput: move |e| plan_monto.set(e.value()) 
+                                            }
+                                            
+                                            label { class: "text-slate-400 text-sm", "Plazo (Meses)" }
+                                            select { 
+                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500", 
+                                                value: plan_plazo(), 
+                                                onchange: move |e| plan_plazo.set(e.value()),
+                                                option { value: "3", "3" }
+                                                option { value: "6", "6" }
+                                                option { value: "9", "9" }
+                                                option { value: "12", "12" }
+                                            }
+                                        }
+                                        div { class: "flex justify-end gap-3 mt-6",
+                                            button { 
+                                                class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-lg", 
+                                                onclick: move |_| show_plan_modal.set(false), 
+                                                "Cancelar" 
+                                            }
+                                            button { 
+                                                class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg", 
+                                                onclick: move |_| { println!("Evaluando..."); }, 
+                                                "Evaluar Crédito" 
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                MenuState::Cartera => rsx! {
+                    div { class: "text-slate-400", "Módulo de Cartera en construcción" }
+                },
+            }
+        }
+    }
+}
