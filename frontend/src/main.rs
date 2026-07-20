@@ -203,6 +203,12 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     let mut search_result = use_signal(|| None::<serde_json::Value>);
     let mut search_status = use_signal(|| String::new());
 
+    // Nuevas signals para el modal de plan de pagos
+    let mut show_plan_modal = use_signal(|| false);
+    let mut plan_producto = use_signal(|| String::new());
+    let mut plan_monto = use_signal(|| String::new());
+    let mut plan_plazo = use_signal(|| "3".to_string());
+
     rsx! {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
@@ -273,38 +279,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                                 button {
                                     class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors whitespace-nowrap",
-                                    onclick: move |_| {
-                                        let curp = curp_input();
-                                        if curp.trim().is_empty() {
-                                            search_status.set("Ingresa un CURP o ID válido".to_string());
-                                            return;
-                                        }
-                                        search_result.set(None);
-                                        search_status.set("Buscando...".to_string());
-                                        spawn(async move {
-                                            let url = format!("http://127.0.0.1:3000/api/clientes/{}", curp);
-                                            match http_client().get(&url).send().await {
-                                                Ok(res) => {
-                                                    if let Ok(data) = res.json::<serde_json::Value>().await {
-                                                        match data["status"].as_str() {
-                                                            Some("success") => {
-                                                                if let Some(cliente) = data.get("cliente") {
-                                                                    search_result.set(Some(cliente.clone()));
-                                                                    search_status.set(String::new());
-                                                                }
-                                                            }
-                                                            Some("not_found") => {
-                                                                search_result.set(None);
-                                                                search_status.set("Cliente nuevo. Iniciar escaneo de INE (KYC)".to_string());
-                                                            }
-                                                            _ => { search_status.set("Respuesta inesperada".to_string()); }
-                                                        }
-                                                    }
-                                                }
-                                                Err(_) => { search_status.set("Error de conexión".to_string()); }
-                                            }
-                                        });
-                                    },
+                                    onclick: move |_| show_plan_modal.set(true),
                                     "Buscar en Red PYMZA"
                                 }
                             }
@@ -332,6 +307,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     }
                                     button {
                                         class: "mt-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg",
+                                        onclick: move |_| show_plan_modal.set(true),
                                         "Crear Plan de Pagos"
                                     }
                                 }
@@ -341,38 +317,3 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     div { class: "text-yellow-400 font-semibold mb-4", "{status}" }
                                     button {
                                         class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg",
-                                        "Subir INE"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                MenuState::Cartera => rsx! {
-                    div {
-                        div { class: "text-xl font-bold text-white mb-6", "Cartera de Clientes" }
-                        div { class: "bg-slate-900 rounded-xl border border-slate-700 overflow-hidden",
-                            table { class: "w-full text-left",
-                                thead {
-                                    tr { class: "border-b border-slate-700 bg-slate-800/50",
-                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Nombre del Cliente" }
-                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Producto" }
-                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Monto" }
-                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Estado" }
-                                        th { class: "px-6 py-4 text-slate-400 text-sm font-medium uppercase tracking-wider", "Acciones" }
-                                    }
-                                }
-                                tbody {
-                                    tr {
-                                        class: "border-b border-slate-700",
-                                        td { colspan: "5", class: "px-6 py-8 text-center text-slate-500", "No hay clientes registrados" }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-        }
-    }
-}
