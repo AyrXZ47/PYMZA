@@ -209,6 +209,11 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     let mut plan_monto = use_signal(|| String::new());
     let mut plan_plazo = use_signal(|| "3".to_string());
 
+    // Signals para Alta de Cliente
+    let mut alta_nombre = use_signal(|| String::new());
+    let mut alta_direccion = use_signal(|| String::new());
+    let mut alta_telefono = use_signal(|| String::new());
+
     rsx! {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
@@ -279,7 +284,37 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                                 button {
                                     class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors whitespace-nowrap",
-                                    onclick: move |_| show_plan_modal.set(true),
+                                    onclick: move |_| {
+                                        let curp = curp_input();
+                                        search_result.set(None);
+                                        search_status.set("Buscando...".to_string());
+                                        show_plan_modal.set(false);
+                                        spawn(async move {
+                                            match http_client()
+                                                .get(&format!("http://127.0.0.1:3000/api/clientes/{}", curp))
+                                                .send()
+                                                .await
+                                            {
+                                                Ok(res) => {
+                                                    if res.status().is_success() {
+                                                        match res.json::<serde_json::Value>().await {
+                                                            Ok(cliente) => {
+                                                                search_result.set(Some(cliente));
+                                                            }
+                                                            Err(_) => {
+                                                                search_status.set("Error al procesar respuesta".to_string());
+                                                            }
+                                                        }
+                                                    } else {
+                                                        search_status.set("Cliente no encontrado en la red".to_string());
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    search_status.set("Error de conexión con el servidor".to_string());
+                                                }
+                                            }
+                                        });
+                                    },
                                     "Buscar en Red PYMZA"
                                 }
                             }
@@ -308,17 +343,48 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     button {
                                         class: "mt-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg",
                                         onclick: move |_| show_plan_modal.set(true),
-                                        "Crear Plan de Pagos"
+                                        "Ofrecer Plan de Pagos"
                                     }
                                 }
                             } else if !status.is_empty() {
-                                div {
-                                    class: "bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-6 max-w-lg",
-                                    div { class: "text-yellow-400 font-semibold mb-4", "{status}" }
-                                    button {
-                                        class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg",
-                                        onclick: move |_| show_plan_modal.set(true),
-                                        "Continuar"
+                                if status == "Cliente no encontrado en la red" {
+                                    div {
+                                        class: "bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-6 max-w-lg",
+                                        h3 { class: "text-yellow-400 font-semibold mb-4", "Cliente no encontrado — Alta de Cliente" }
+                                        div { class: "flex flex-col gap-4",
+                                            input {
+                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                                placeholder: "Nombre Completo",
+                                                value: alta_nombre(),
+                                                oninput: move |e| alta_nombre.set(e.value()),
+                                            }
+                                            input {
+                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                                placeholder: "Dirección",
+                                                value: alta_direccion(),
+                                                oninput: move |e| alta_direccion.set(e.value()),
+                                            }
+                                            input {
+                                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                                placeholder: "Teléfono",
+                                                value: alta_telefono(),
+                                                oninput: move |e| alta_telefono.set(e.value()),
+                                            }
+                                            button {
+                                                class: "bg-green-600 hover:bg-green-700 text-white font-semibold px-6 py-3 rounded-lg",
+                                                onclick: move |_| {
+                                                    println!("Alta de cliente: {} {} {}", alta_nombre(), alta_direccion(), alta_telefono());
+                                                    search_status.set(String::new());
+                                                    curp_input.set(String::new());
+                                                },
+                                                "Registrar Cliente"
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    div {
+                                        class: "bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-6 max-w-lg",
+                                        div { class: "text-yellow-400 font-semibold mb-4", "{status}" }
                                     }
                                 }
                             }
