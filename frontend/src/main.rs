@@ -301,19 +301,21 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                 .await
                                             {
                                                 Ok(res) => {
-                                                    if res.status().is_success() {
-                                                        match res.json::<serde_json::Value>().await {
-                                                            Ok(cliente) => {
-                                                                 if cliente.is_object() {
-                                                                     search_result.set(Some(cliente));
-                                                                 }
-                                                             }
-                                                            Err(_) => {
-                                                                search_status.set("Error al procesar respuesta".to_string());
+                                                    match res.json::<serde_json::Value>().await {
+                                                        Ok(data) => {
+                                                            if data["status"] == "success" {
+                                                                if let Some(cliente) = data.get("cliente") {
+                                                                    search_result.set(Some(cliente.clone()));
+                                                                }
+                                                            } else if data["status"] == "not_found" {
+                                                                search_status.set("Cliente no encontrado en la red".to_string());
+                                                            } else {
+                                                                search_status.set("Error del servidor".to_string());
                                                             }
                                                         }
-                                                    } else {
-                                                        search_status.set("Cliente no encontrado en la red".to_string());
+                                                        Err(_) => {
+                                                            search_status.set("Error al procesar respuesta".to_string());
+                                                        }
                                                     }
                                                 }
                                                 Err(_) => {
