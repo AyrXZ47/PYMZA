@@ -15,6 +15,23 @@ enum MenuState {
     Cartera,
 }
 
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct DashboardStats {
+    empresa: String,
+    creditos_activos: i32,
+    capital_prestado: f64,
+    proximos_cobros: i32,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct PagoInfo {
+    mes: i32,
+    pago: f64,
+    interes: f64,
+    capital: f64,
+    saldo_restante: f64,
+}
+
 fn main() {
     dioxus::launch(App);
 }
@@ -22,8 +39,8 @@ fn main() {
 #[component]
 fn App() -> Element {
     let is_authenticated = use_signal(|| false);
-    let mut current_company = use_signal(|| String::new());
-    let mut active_menu = use_signal(|| MenuState::Dashboard);
+    let current_company = use_signal(|| String::new());
+    let active_menu = use_signal(|| MenuState::Dashboard);
 
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
@@ -203,27 +220,60 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     let mut search_result = use_signal(|| None::<serde_json::Value>);
     let mut search_status = use_signal(|| String::new());
 
-    // Nuevas signals para el modal de plan de pagos
     let mut show_plan_modal = use_signal(|| false);
     let mut plan_producto = use_signal(|| String::new());
     let mut plan_monto = use_signal(|| String::new());
     let mut plan_plazo = use_signal(|| "3".to_string());
     let mut modal_step = use_signal(|| 0u8);
     let mut eval_estado = use_signal(|| String::new());
-    let mut eval_mensualidad = use_signal(|| 0.0);
+    let mut eval_pago_mensual = use_signal(|| 0.0);
+    let mut eval_tasa_interes = use_signal(|| 0.0);
+    let mut eval_plan_pagos = use_signal(|| Vec::<PagoInfo>::new());
     let mut consideraciones = use_signal(|| String::new());
     let mut terms_accepted = use_signal(|| false);
 
-    // Signals para Alta de Cliente
     let mut alta_nombre = use_signal(|| String::new());
     let mut alta_direccion = use_signal(|| String::new());
     let mut alta_telefono = use_signal(|| String::new());
+
+    let mut dashboard_stats = use_signal(|| DashboardStats::default());
+    let mut stats_loaded = use_signal(|| false);
+
+    // Fetch dashboard stats when empresa changes or after authorization
+    if !stats_loaded() && !current_company().is_empty() {
+        let empresa = current_company();
+        stats_loaded.set(true);
+        spawn(async move {
+            match http_client()
+                .get(&format!("http://127.0.0.1:3000/api/dashboard/{}", empresa))
+                .send()
+                .await
+            {
+                Ok(res) => {
+                    if let Ok(data) = res.json::<serde_json::Value>().await {
+                        if data["status"] == "success" {
+                            if let Some(s) = data.get("stats") {
+                                let e = s["empresa"].as_str().unwrap_or("").to_string();
+                                let ca = s["creditos_activos"].as_i64().unwrap_or(0) as i32;
+                                let cp = s["capital_prestado"].as_f64().unwrap_or(0.0);
+                                let pc = s["proximos_cobros"].as_i64().unwrap_or(0) as i32;
+                                dashboard_stats.set(DashboardStats {
+                                    empresa: e, creditos_activos: ca,
+                                    capital_prestado: cp, proximos_cobros: pc,
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        });
+    }
 
     rsx! {
         div {
             class: "bg-slate-800 flex-1 p-8 text-slate-200",
 
-            // Welcome banner
             div {
                 class: "bg-gradient-to-r from-blue-900/40 to-slate-800 border border-blue-800/50 rounded-xl p-6 mb-6 flex items-center justify-between",
                 div {
@@ -244,8 +294,9 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
             }
 
             match active_menu() {
-                MenuState::Dashboard => rsx! {
-                    div { class: "grid grid-cols-3 gap-6",
+                MenuState::Dashboard => {
+                    let stats = dashboard_stats();
+                    rsx! { div { class: "grid grid-cols-3 gap-6",
                         div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
                             div { class: "flex items-center gap-3 mb-4",
                                 svg { class: "w-6 h-6 text-blue-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
@@ -253,7 +304,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                                 div { class: "text-slate-400 text-sm font-medium", "Créditos Activos" }
                             }
-                            div { class: "text-3xl font-bold text-white", "0" }
+                            div { class: "text-3xl font-bold text-white", "{stats.creditos_activos}" }
                         }
                         div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
                             div { class: "flex items-center gap-3 mb-4",
@@ -262,7 +313,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                                 div { class: "text-slate-400 text-sm font-medium", "Capital Prestado" }
                             }
-                            div { class: "text-3xl font-bold text-white", "$0 MXN" }
+                            div { class: "text-3xl font-bold text-white", "${stats.capital_prestado} MXN" }
                         }
                         div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
                             div { class: "flex items-center gap-3 mb-4",
@@ -271,8 +322,9 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                                 div { class: "text-slate-400 text-sm font-medium", "Próximos Cobros" }
                             }
-                            div { class: "text-3xl font-bold text-white", "0" }
+                            div { class: "text-3xl font-bold text-white", "{stats.proximos_cobros}" }
                         }
+                    }
                     }
                 },
                 MenuState::AltaCliente => {
@@ -328,10 +380,9 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                             }
 
-                            // Resultados de la Búsqueda
                             if let Some(cliente) = search_result() {
                                 div {
-                                    class: "bg-green-900/20 border border-green-700/50 rounded-xl p-6 max-w-lg animate__animated animate__fadeIn",
+                                    class: "bg-green-900/20 border border-green-700/50 rounded-xl p-6 max-w-lg",
                                     div { class: "flex items-center gap-2 mb-4",
                                         div { class: "text-green-400 font-semibold", "¡Cliente encontrado en Red PYMZA!" }
                                     }
@@ -398,10 +449,9 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                 }
                             }
 
-                            // Modal de Plan de Pagos
                             if show_plan_modal() {
                                 div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-50",
-                                    div { class: "bg-slate-900 border border-slate-700 p-6 rounded-xl w-full max-w-md",
+                                    div { class: "bg-slate-900 border border-slate-700 p-6 rounded-xl w-full max-w-2xl",
                                         match modal_step() {
                                             0 => rsx! {
                                                 h2 { class: "text-xl font-bold text-white mb-4", "Configurar Plan de Pagos" }
@@ -426,10 +476,10 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                         class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
                                                         value: plan_plazo(),
                                                         onchange: move |e| plan_plazo.set(e.value()),
-                                                        option { value: "3", "3" }
-                                                        option { value: "6", "6" }
-                                                        option { value: "9", "9" }
-                                                        option { value: "12", "12" }
+                                                        option { value: "3", "3 meses — Tasa 3%" }
+                                                        option { value: "6", "6 meses — Tasa 6%" }
+                                                        option { value: "9", "9 meses — Tasa 10%" }
+                                                        option { value: "12", "12 meses — Tasa 15%" }
                                                     }
                                                 }
                                                 div { class: "flex justify-end gap-3 mt-6",
@@ -442,14 +492,16 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                         class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-lg",
                                                         onclick: move |_| {
                                                             let curp = curp_input();
-                                                            let monto = plan_monto();
+                                                            let monto_str = plan_monto();
                                                             let plazo = plan_plazo();
                                                             modal_step.set(1);
                                                             spawn(async move {
+                                                                let monto_num: f64 = monto_str.parse().unwrap_or(0.0);
+                                                                let plazo_num: i32 = plazo.parse().unwrap_or(3);
                                                                 let body = serde_json::json!({
                                                                     "curp": curp,
-                                                                    "monto": monto,
-                                                                    "plazo": plazo,
+                                                                    "monto": monto_num,
+                                                                    "plazo_meses": plazo_num,
                                                                 });
                                                                 match http_client().post("http://127.0.0.1:3000/api/creditos/evaluar")
                                                                     .json(&body)
@@ -460,8 +512,19 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                         match res.json::<serde_json::Value>().await {
                                                                             Ok(data) => {
                                                                                 eval_estado.set(data["estado"].as_str().unwrap_or("").to_string());
-                                                                                eval_mensualidad.set(data["mensualidad"].as_f64().unwrap_or(0.0));
+                                                                                eval_pago_mensual.set(data["pago_mensual"].as_f64().unwrap_or(0.0));
+                                                                                eval_tasa_interes.set(data["tasa_interes"].as_f64().unwrap_or(0.0));
                                                                                 consideraciones.set(data["consideraciones"].as_str().unwrap_or("").to_string());
+                                                                                if let Some(plan) = data["plan_pagos"].as_array() {
+                                                                                    let planes: Vec<PagoInfo> = plan.iter().map(|p| PagoInfo {
+                                                                                        mes: p["mes"].as_i64().unwrap_or(0) as i32,
+                                                                                        pago: p["pago"].as_f64().unwrap_or(0.0),
+                                                                                        interes: p["interes"].as_f64().unwrap_or(0.0),
+                                                                                        capital: p["capital"].as_f64().unwrap_or(0.0),
+                                                                                        saldo_restante: p["saldo_restante"].as_f64().unwrap_or(0.0),
+                                                                                    }).collect();
+                                                                                    eval_plan_pagos.set(planes);
+                                                                                }
                                                                             }
                                                                             Err(_) => {
                                                                                 eval_estado.set("Error".to_string());
@@ -486,21 +549,62 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                     div { class: "text-blue-400 text-lg font-semibold animate-pulse", "Evaluando riesgo en Red PYMZA..." }
                                                 }
                                             },
-                                            2 => rsx! {
+                                            2 => {
+                                                let planes = eval_plan_pagos();
+                                                rsx! {
                                                 h2 { class: "text-xl font-bold text-white mb-4", "Resultado de Evaluación" }
                                                 div { class: "flex flex-col gap-4",
                                                     div {
                                                         class: format!("text-lg font-bold {}", if eval_estado() == "Aprobado" { "text-green-400" } else { "text-red-400" }),
                                                         "{eval_estado}"
                                                     }
-                                                    div {
-                                                        div { class: "text-slate-400 text-sm", "Mensualidad Estimada" }
-                                                        div { class: "text-2xl font-bold text-white", "${eval_mensualidad} MXN" }
+
+                                                    div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4",
+                                                        div { class: "grid grid-cols-2 gap-4",
+                                                            div {
+                                                                div { class: "text-slate-400 text-xs uppercase mb-1", "Mensualidad Estimada" }
+                                                                div { class: "text-2xl font-bold text-white", "${eval_pago_mensual} MXN" }
+                                                            }
+                                                            div {
+                                                                div { class: "text-slate-400 text-xs uppercase mb-1", "Tasa de Interés" }
+                                                                div { class: "text-xl font-bold text-yellow-400", "{(eval_tasa_interes() * 100.0) as i32}%" }
+                                                            }
+                                                        }
                                                     }
-                                                    div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4 max-h-40 overflow-y-auto",
+
+                                                    div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4",
+                                                        div { class: "text-slate-400 text-sm mb-2 font-semibold", "Plan de Pagos" }
+                                                        div { class: "overflow-x-auto max-h-48 overflow-y-auto",
+                                                            table { class: "w-full text-sm text-left",
+                                                                thead {
+                                                                    tr { class: "text-slate-400 border-b border-slate-700",
+                                                                        th { class: "py-2 px-2", "Mes" }
+                                                                        th { class: "py-2 px-2", "Pago" }
+                                                                        th { class: "py-2 px-2", "Interés" }
+                                                                        th { class: "py-2 px-2", "Capital" }
+                                                                        th { class: "py-2 px-2", "Saldo Restante" }
+                                                                    }
+                                                                }
+                                                                tbody {
+                                                                    for p in &planes {
+                                                                        tr { class: "border-b border-slate-700/50 text-slate-300",
+                                                                            td { class: "py-2 px-2", "{p.mes}" }
+                                                                            td { class: "py-2 px-2", "${p.pago}" }
+                                                                            td { class: "py-2 px-2", "${p.interes}" }
+                                                                            td { class: "py-2 px-2", "${p.capital}" }
+                                                                            td { class: "py-2 px-2", "${p.saldo_restante}" }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4 max-h-32 overflow-y-auto",
                                                         div { class: "text-slate-400 text-sm mb-2", "Consideraciones" }
                                                         div { class: "text-slate-200 text-sm whitespace-pre-wrap", "{consideraciones}" }
                                                     }
+
                                                     label { class: "flex items-start gap-2 text-slate-300 text-sm cursor-pointer",
                                                         input {
                                                             type: "checkbox",
@@ -521,38 +625,67 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                         class: format!("text-white font-semibold px-4 py-2 rounded-lg {}", if terms_accepted() { "bg-green-600 hover:bg-green-700" } else { "bg-gray-600 cursor-not-allowed" }),
                                                         disabled: !terms_accepted(),
                                                         onclick: move |_| {
-                                                            let curp = curp_input();
+                                                            let empresa = current_company();
+                                                            let cliente_curp = curp_input();
                                                             let producto = plan_producto();
-                                                            let monto = plan_monto();
+                                                            let monto_total = plan_monto();
                                                             let plazo = plan_plazo();
+                                                            let pago_mensual = eval_pago_mensual();
+                                                            let tasa = eval_tasa_interes();
+                                                            let _plan_pagos_snapshot = eval_plan_pagos();
                                                             spawn(async move {
+                                                                let monto_num: f64 = monto_total.parse().unwrap_or(0.0);
+                                                                let plazo_num: i32 = plazo.parse().unwrap_or(3);
                                                                 let body = serde_json::json!({
-                                                                    "curp": curp,
+                                                                    "empresa": empresa,
+                                                                    "cliente_curp": cliente_curp,
                                                                     "producto": producto,
-                                                                    "monto": monto,
-                                                                    "plazo": plazo,
+                                                                    "monto_total": monto_num,
+                                                                    "plazo_meses": plazo_num,
+                                                                    "pago_mensual": pago_mensual,
+                                                                    "tasa_interes": tasa,
                                                                 });
-                                                                match http_client().post("http://127.0.0.1:3000/api/creditos/autorizar")
+                                                                if let Ok(res) = http_client().post("http://127.0.0.1:3000/api/creditos/autorizar")
                                                                     .json(&body)
                                                                     .send()
                                                                     .await
                                                                 {
-                                                                    Ok(res) => {
-                                                                        if res.status().is_success() {
+                                                                    if let Ok(data) = res.json::<serde_json::Value>().await {
+                                                                        if data["status"] == "success" {
+                                                                            // Update local dashboard stats
                                                                             show_plan_modal.set(false);
                                                                             modal_step.set(0);
                                                                             plan_producto.set(String::new());
                                                                             plan_monto.set(String::new());
                                                                             plan_plazo.set("3".to_string());
                                                                             terms_accepted.set(false);
+                                                                            // Refresh dashboard
+                                                                            if let Ok(stats_res) = http_client()
+                                                                                .get(&format!("http://127.0.0.1:3000/api/dashboard/{}", empresa))
+                                                                                .send()
+                                                                                .await
+                                                                            {
+                                                                                if let Ok(stats_data) = stats_res.json::<serde_json::Value>().await {
+                                                                                    if let Some(s) = stats_data.get("stats") {
+                                                                                        let e = s["empresa"].as_str().unwrap_or("").to_string();
+                                                                                        let ca = s["creditos_activos"].as_i64().unwrap_or(0) as i32;
+                                                                                        let cp = s["capital_prestado"].as_f64().unwrap_or(0.0);
+                                                                                        let pc = s["proximos_cobros"].as_i64().unwrap_or(0) as i32;
+                                                                                        dashboard_stats.set(DashboardStats {
+                                                                                            empresa: e, creditos_activos: ca,
+                                                                                            capital_prestado: cp, proximos_cobros: pc,
+                                                                                        });
+                                                                                    }
+                                                                                }
+                                                                            }
                                                                         }
                                                                     }
-                                                                    Err(_) => {}
                                                                 }
                                                             });
                                                         },
                                                         "Autorizar Crédito"
                                                     }
+                                                }
                                                 }
                                             },
                                             _ => rsx! {},
