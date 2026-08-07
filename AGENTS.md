@@ -68,12 +68,20 @@ mongod --dbpath ~/.mongo-data --bind_ip 127.0.0.1 --port 27017
 mongosh < backend/scripts/seed.js
 
 cd backend && MONGODB_URI=... cargo run  # Backend on 127.0.0.1:3000
-cd frontend && dx serve --hot-reload     # Frontend on :8080
+cd frontend && dx serve                  # Frontend on :8080 (NO uses --hot-reload: en dx 0.7.9 pide un valor: --hot-reload true)
 ```
 
 Backend reads `MONGODB_URI` from `.env` (or env var). Defaults to `mongodb://127.0.0.1:27017`. Frontend hardcodes `http://127.0.0.1:3000` for all API calls (main.rs) — change it in one place.
 
 On NixOS (see `modules/apps/rust-dev.nix` in yovick/nixos-config): after the first `nixos-rebuild switch`, run once per machine `rustup default stable && rustup target add wasm32-unknown-unknown`. MongoDB's license is SSPL (unfree).
+
+## Tailwind (NixOS gotcha)
+
+**`dx` from nixpkgs does NOT auto-compile Tailwind** — it only copies `assets/tailwind.css` (must already exist, or `asset!` fails to hash and the app loads unstyled). The compiled CSS is **committed** (unignored in `.gitignore`). After adding/changing Tailwind classes, regenerate:
+
+```bash
+cd frontend && ./tailwind.sh        # o: ./tailwind.sh --watch durante desarrollo
+```
 
 ## Gotchas
 
