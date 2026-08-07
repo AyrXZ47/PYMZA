@@ -1,0 +1,64 @@
+// Seed demo PYMZA. Uso: mongosh < scripts/seed.js
+// (idempotente: borra y reinserta las colecciones de demo)
+const db = db.getSiblingDB('pymza');
+
+const EMPRESA = 'Ferretería El Tornillo';
+
+db.dropDatabase();
+
+db.empresas.insertMany([
+  { correo: 'demo@pymza.mx', password: 'demo123', nombre_empresa: EMPRESA },
+]);
+
+db.clientes.insertMany([
+  {
+    curp: 'RAMJ920215MDFMZR03',
+    nombre_completo: 'Janeth Ramos Zamora',
+    score: 720,
+    nivel_riesgo: 'Bajo',
+    historial_pagos: 'Puntual en 2 empresas de la red',
+    direccion: 'Av. Juárez 123, Centro',
+    telefono: '5551234567',
+  },
+  {
+    curp: 'GAML930528HDFLNR05',
+    nombre_completo: 'Gabriel Martínez López',
+    score: 640,
+    nivel_riesgo: 'Medio',
+    historial_pagos: '1 retraso de 5 días',
+    direccion: 'Calle 5 de Mayo 88',
+    telefono: '5559876543',
+  },
+  {
+    curp: 'GARV850710MCHLRN09',
+    nombre_completo: 'Vanessa García Ruiz',
+    score: 510,
+    nivel_riesgo: 'Alto',
+    historial_pagos: 'Sin historial en la red',
+    direccion: 'Andador Las Flores 4',
+    telefono: '5554443322',
+  },
+]);
+
+db.planes_pago.insertMany([
+  {
+    empresa: EMPRESA,
+    cliente_curp: 'RAMJ920215MDFMZR03',
+    producto: 'Taladro Bosch',
+    monto_total: 3200.0,
+    plazo_meses: 6,
+    pago_mensual: 565.33,
+    tasa_interes: 0.06,
+    estado: 'Activo',
+    fecha: '2026-07-22',
+  },
+]);
+
+db.dashboard_stats.insertOne({
+  empresa: EMPRESA,
+  creditos_activos: 1,
+  capital_prestado: 3200.0,
+  proximos_cobros: 6,
+});
+
+print(`Seed OK — empresa demo: ${EMPRESA} (demo@pymza.mx / demo123)`);

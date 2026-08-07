@@ -33,7 +33,7 @@ Not lazy about: input validation at trust boundaries, error handling that preven
 | Frontend | Dioxus 0.7 (Rust → WASM) + Tailwind CSS |
 | Backend | Axum 0.6 / Tokio |
 | Database | MongoDB 7+ |
-| Infra | Docker Compose |
+| Infra | Docker Compose (`mongo:latest` + named volume) |
 
 ## Structure
 
@@ -41,49 +41,74 @@ Not lazy about: input validation at trust boundaries, error handling that preven
 PYMZA/
 ├── backend/          # Axum server
 │   └── src/
-│       ├── main.rs   # Entrypoint: loads .env, connects MongoDB, starts on :3000
-│       ├── db.rs     # MongoDB pool (max 10), reads MONGODB_URI from env (default mongodb://127.0.0.1:27017)
-│       ├── models/   # Domain structs (empresa, cliente — score.rs/alert.rs/client.rs are stale)
-│       └── services/ # Intentionally empty (mod.rs says so)
-├── frontend/         # Dioxus WASM SPA
-│   ├── src/main.rs   # Entrypoint: Login + Sidebar + MainArea (menu-based, no router)
-│   ├── Dioxus.toml
-│   └── tailwind.css  # Auto-detected by dx serve
+│       ├── main.rs   # ENTRYPOINT: all 7 routes live here (handlers are inline, not in services/)
+│       ├── db.rs     # MongoDB pool (max 10); hardcodes 127.0.0.1 to avoid IPv6 timeout
+│       ├── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
+│       └── services/ # ocr_validation.rs / trust_score.rs / early_warning.rs = placeholders, NOT compiled
+├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~830 lines), no router
+│   ├── src/
+│   │   ├── main.rs   # Entrypoint: Login + Sidebar + MainArea (MenuState enum, conditional render)
+│   │   ├── components/  # STALE Dioxus template files — not referenced by main.rs
+│   │   └── views/       # STALE Dioxus template files — not referenced by main.rs
+│   ├── tailwind.css  # Tailwind input (tracked, 1 line). `dx serve` auto-compiles → assets/tailwind.css
+│   └── clippy.toml   # Only lint config in the repo (Dioxus signal read-locks over await)
+├── main.rs           # STALE — no Cargo.toml at root, never compiled. Ignore it.
 └── docker-compose.yml
 ```
 
 ## Startup (order matters)
 
 ```bash
-docker compose up -d                     # MongoDB on :27017
-cd backend && MONGODB_URI=... cargo run  # Backend on :3000
+# MongoDB on :27017 (Docker)
+docker compose up -d
+# o en NixOS sin docker (mongodb del módulo rust-dev de nixos-config):
+mongod --dbpath ~/.mongo-data --bind_ip 127.0.0.1 --port 27017
+
+# Seed demo (una vez por base nueva) — empresa: demo@pymza.mx / demo123
+mongosh < backend/scripts/seed.js
+
+cd backend && MONGODB_URI=... cargo run  # Backend on 127.0.0.1:3000
 cd frontend && dx serve --hot-reload     # Frontend on :8080
 ```
 
-Backend reads `MONGODB_URI` from `.env` (or env var). Defaults to `mongodb://127.0.0.1:27017`.
+Backend reads `MONGODB_URI` from `.env` (or env var). Defaults to `mongodb://127.0.0.1:27017`. Frontend hardcodes `http://127.0.0.1:3000` for all API calls (main.rs) — change it in one place.
+
+On NixOS (see `modules/apps/rust-dev.nix` in yovick/nixos-config): after the first `nixos-rebuild switch`, run once per machine `rustup default stable && rustup target add wasm32-unknown-unknown`. MongoDB's license is SSPL (unfree).
 
 ## Gotchas
 
-- **Root `main.rs` is stale.** Real entrypoints are `backend/src/main.rs` and `frontend/src/main.rs`.
-- **`backend/src/services/mod.rs`** is intentionally empty — don't add code there unless the actual service files (`ocr_validation.rs`, `trust_score.rs`, `early_warning.rs`) are first populated.
-- **`backend/src/models/score.rs`, `alert.rs`, `client.rs`** reference `chrono` which is NOT in `Cargo.toml`. These models are unused/uncompilable. Only `empresa.rs` and `cliente.rs` are wired in.
-- **`Cargo.lock`** is gitignored (in `.gitignore` at root).
-- **Frontend uses Dioxus 0.7** — no `cx`, `Scope`, `use_state`. Signals, `#[component]`, `rsx!`. See `frontend/AGENTS.md` for API reference.
-- **Frontend app is not using the Dioxus Router** — it uses a simple `MenuState` enum with conditional rendering in the `App` component.
-- **No tests, no CI, no lint/format checks** configured yet. Add them before production.
+- **Root `main.rs` is stale** and not part of any crate. Real entrypoints: `backend/src/main.rs`, `frontend/src/main.rs`.
+- **`backend/src/services/` is dead code.** The 3 files only have placeholder functions and `mod.rs` is empty; `main.rs` never declares `mod services`. Route handlers are written inline in `main.rs` — follow that pattern.
+- **`backend/src/models/score.rs`, `alert.rs`, `client.rs` reference `chrono`, which is NOT in `Cargo.toml`.** They're uncompilable but harmless because `models/mod.rs` doesn't include them. Only `empresa.rs`, `cliente.rs`, `credito.rs` are wired in.
+- **Building the backend needs OpenSSL dev libs** on Linux (mongodb driver ships with `openssl-tls` feature).
+- **`Cargo.lock` is gitignored** (root `.gitignore`).
+- **Frontend uses Dioxus 0.7** — no `cx`, `Scope`, `use_state`. Signals, `#[component]`, `rsx!`, `spawn`. `frontend/AGENTS.md` is the auto-loaded Dioxus 0.7 API reference — follow it.
+- **`dioxus` is pinned to `=0.7.9`** in `frontend/Cargo.toml` to match the `dx` CLI that ships in nixpkgs (0.7.9). Bumping one without the other triggers `dx` version-mismatch warnings.
+- **No router:** app uses a `MenuState` enum + conditional rendering. The `router` feature is enabled in `frontend/Cargo.toml` but unused.
+- **`frontend/components/` and `views/` are unwired template leftovers** (from the Dioxus jumpstart). Don't put new code there — put it in `main.rs`.
+- **`frontend/tailwind.css`** (tracked) is the Tailwind input; the compiled `assets/tailwind.css` is gitignored/generated.
+- **No tests, no CI.** Only lint config is `frontend/clippy.toml`. `cargo test`/`dx check` are the only verification available.
+- **Login has no security** — password compared in plaintext against the `empresas` collection; token is static `"token-temporal-123"`.
 
 ## API Endpoints (backend)
+
+Collections: `empresas`, `clientes`, `solicitudes`, `planes_pago`, `dashboard_stats`.
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/login` | Empresa auth (correo + password) |
 | GET | `/api/clientes/:curp` | Lookup client by CURP in PYMZA network |
-| POST | `/api/update_status` | Update solicitud status |
-| POST | `/api/ocr` | OCR validation (placeholder) |
+| POST | `/api/clientes` | Alta de cliente nuevo (valida CURP, evita duplicados; score base 550) |
+| POST | `/api/update_status` | Update `solicitudes` status |
+| POST | `/api/ocr` | OCR validation (placeholder, fixed JSON) |
+| POST | `/api/creditos/evaluar` | Evaluate credit: rate by plazo (3m=3% … 12m=15%), approve/reject by score, build payment plan |
+| POST | `/api/creditos/autorizar` | Insert `planes_pago` + upsert `dashboard_stats` |
+| GET | `/api/creditos/:empresa` | Active `planes_pago` for a company (Cartera) |
+| GET | `/api/dashboard/:empresa` | Dashboard stats per empresa |
 
 ## Secrets / Config
 
-- `.env` file (gitignored) with `MONGODB_URI=""`
+- `.env` file (gitignored) with `MONGODB_URI=""` — see `.env.example`
 - Default MongoDB URI: `mongodb://127.0.0.1:27017`
 - No auth tokens, no JWT — login returns static `"token-temporal-123"`
 

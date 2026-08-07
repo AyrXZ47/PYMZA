@@ -37,7 +37,7 @@ pub struct AutorizarReq {
     pub tasa_interes: f64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PlanPago {
     pub empresa: String,
     pub cliente_curp: String,

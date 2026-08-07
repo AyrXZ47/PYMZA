@@ -10,7 +10,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
+use futures::StreamExt;
 use models::credito::{EvaluarReq, AutorizarReq, PlanPago, EvaluarRes, PagoInfo, DashboardStats};
+use models::cliente::{Cliente, CrearClienteReq};
 
 #[derive(Deserialize, Serialize)]
 struct UpdateStatusPayload { id: String, estado: String }
@@ -60,9 +62,11 @@ async fn main() {
         .route("/api/update_status", post(update_status))
         .route("/api/ocr", post(process_ocr))
         .route("/api/login", post(login_empresa))
+        .route("/api/clientes", post(crear_cliente))
         .route("/api/clientes/:curp", get(buscar_cliente))
         .route("/api/creditos/evaluar", post(evaluar_credito))
         .route("/api/creditos/autorizar", post(autorizar_credito))
+        .route("/api/creditos/:empresa", get(obtener_creditos))
         .route("/api/dashboard/:empresa", get(obtener_dashboard))
         .layer(CorsLayer::permissive())
         .with_state(db_client);
@@ -141,6 +145,70 @@ async fn buscar_cliente(
             Json(serde_json::json!({"status": "error"}))
         }
     }
+}
+
+async fn crear_cliente(
+    State(client): State<mongodb::Client>,
+    Json(payload): Json<CrearClienteReq>,
+) -> Json<serde_json::Value> {
+    if !es_curp_valida(&payload.curp) {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "CURP inválida: deben ser 18 caracteres alfanuméricos"
+        }));
+    }
+
+    let coll = client.database("pymza").collection::<Cliente>("clientes");
+
+    if let Ok(Some(_)) = coll.find_one(mongodb::bson::doc! { "curp": &payload.curp }, None).await {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Cliente ya existe en la red PYMZA"
+        }));
+    }
+
+    let cliente = Cliente {
+        curp: payload.curp,
+        nombre_completo: payload.nombre_completo,
+        score: 550,
+        nivel_riesgo: "Medio".to_string(),
+        historial_pagos: "Sin historial en la red".to_string(),
+        direccion: payload.direccion,
+        telefono: payload.telefono,
+    };
+
+    match coll.insert_one(&cliente, None).await {
+        Ok(_) => Json(serde_json::json!({ "status": "success", "cliente": cliente })),
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({ "status": "error", "message": "Error al guardar el cliente" }))
+        }
+    }
+}
+
+async fn obtener_creditos(
+    State(client): State<mongodb::Client>,
+    axum::extract::Path(empresa): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let coll = client.database("pymza").collection::<PlanPago>("planes_pago");
+
+    match coll.find(mongodb::bson::doc! { "empresa": &empresa }, None).await {
+        Ok(mut cursor) => {
+            let mut creditos = Vec::new();
+            while let Some(Ok(plan)) = cursor.next().await {
+                creditos.push(plan);
+            }
+            Json(serde_json::json!({ "status": "success", "creditos": creditos }))
+        }
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({ "status": "error" }))
+        }
+    }
+}
+
+fn es_curp_valida(curp: &str) -> bool {
+    curp.len() == 18 && curp.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 async fn evaluar_credito(

@@ -239,6 +239,9 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     let mut dashboard_stats = use_signal(|| DashboardStats::default());
     let mut stats_loaded = use_signal(|| false);
 
+    let mut cartera_planes = use_signal(|| Vec::<serde_json::Value>::new());
+    let mut cartera_loaded = use_signal(|| false);
+
     // Fetch dashboard stats when empresa changes or after authorization
     if !stats_loaded() && !current_company().is_empty() {
         let empresa = current_company();
@@ -261,6 +264,30 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     empresa: e, creditos_activos: ca,
                                     capital_prestado: cp, proximos_cobros: pc,
                                 });
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        });
+    }
+
+    // Fetch cartera (planes activos) cuando cambia la empresa
+    if !cartera_loaded() && !current_company().is_empty() {
+        let empresa = current_company();
+        cartera_loaded.set(true);
+        spawn(async move {
+            match http_client()
+                .get(&format!("http://127.0.0.1:3000/api/creditos/{}", empresa))
+                .send()
+                .await
+            {
+                Ok(res) => {
+                    if let Ok(data) = res.json::<serde_json::Value>().await {
+                        if data["status"] == "success" {
+                            if let Some(arr) = data["creditos"].as_array() {
+                                cartera_planes.set(arr.clone());
                             }
                         }
                     }
@@ -433,9 +460,47 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                             button {
                                                 class: "bg-green-600 hover:bg-green-700 text-white font-semibold px-6 py-3 rounded-lg",
                                                 onclick: move |_| {
-                                                    println!("Alta de cliente: {} {} {}", alta_nombre(), alta_direccion(), alta_telefono());
-                                                    search_status.set(String::new());
-                                                    curp_input.set(String::new());
+                                                    let curp = curp_input();
+                                                    let nombre = alta_nombre();
+                                                    let direccion = alta_direccion();
+                                                    let telefono = alta_telefono();
+                                                    spawn(async move {
+                                                        let body = serde_json::json!({
+                                                            "curp": curp,
+                                                            "nombre_completo": nombre,
+                                                            "direccion": direccion,
+                                                            "telefono": telefono,
+                                                        });
+                                                        match http_client().post("http://127.0.0.1:3000/api/clientes")
+                                                            .json(&body)
+                                                            .send()
+                                                            .await
+                                                        {
+                                                            Ok(res) => {
+                                                                match res.json::<serde_json::Value>().await {
+                                                                    Ok(data) => {
+                                                                        if data["status"] == "success" {
+                                                                            if let Some(cliente) = data.get("cliente") {
+                                                                                search_result.set(Some(cliente.clone()));
+                                                                                alta_nombre.set(String::new());
+                                                                                alta_direccion.set(String::new());
+                                                                                alta_telefono.set(String::new());
+                                                                                search_status.set(String::new());
+                                                                            }
+                                                                        } else {
+                                                                            search_status.set(data["message"].as_str().unwrap_or("Error al registrar").to_string());
+                                                                        }
+                                                                    }
+                                                                    Err(_) => {
+                                                                        search_status.set("Error al procesar respuesta".to_string());
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(_) => {
+                                                                search_status.set("Error de conexión con el servidor".to_string());
+                                                            }
+                                                        }
+                                                    });
                                                 },
                                                 "Registrar Cliente"
                                             }
@@ -655,6 +720,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                             // Update local dashboard stats
                                                                             show_plan_modal.set(false);
                                                                             modal_step.set(0);
+                                                                            cartera_loaded.set(false);
                                                                             plan_producto.set(String::new());
                                                                             plan_monto.set(String::new());
                                                                             plan_plazo.set("3".to_string());
@@ -696,8 +762,52 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                         }
                     }
                 },
-                MenuState::Cartera => rsx! {
-                    div { class: "text-slate-400", "Módulo de Cartera en construcción" }
+                MenuState::Cartera => {
+                    let planes = cartera_planes();
+                    rsx! {
+                        div {
+                            h2 { class: "text-2xl font-bold mb-6 text-white", "Cartera de Créditos" }
+                            if planes.is_empty() {
+                                div { class: "text-slate-400", "No hay créditos activos para esta empresa." }
+                            } else {
+                                div { class: "overflow-x-auto",
+                                    table { class: "w-full text-sm text-left bg-slate-900 rounded-xl border border-slate-700",
+                                        thead {
+                                            tr { class: "text-slate-400 border-b border-slate-700",
+                                                th { class: "py-3 px-4", "Producto" }
+                                                th { class: "py-3 px-4", "Cliente (CURP)" }
+                                                th { class: "py-3 px-4", "Monto Total" }
+                                                th { class: "py-3 px-4", "Plazo" }
+                                                th { class: "py-3 px-4", "Pago Mensual" }
+                                                th { class: "py-3 px-4", "Interés" }
+                                                th { class: "py-3 px-4", "Estado" }
+                                                th { class: "py-3 px-4", "Fecha" }
+                                            }
+                                        }
+                                        tbody {
+                                            for p in &planes {
+                                                tr { class: "border-b border-slate-700/50 text-slate-300",
+                                                    td { class: "py-3 px-4", "{p[\"producto\"].as_str().unwrap_or(\"—\")}" }
+                                                    td { class: "py-3 px-4 font-mono", "{p[\"cliente_curp\"].as_str().unwrap_or(\"—\")}" }
+                                                    td { class: "py-3 px-4", "${p[\"monto_total\"].as_f64().unwrap_or(0.0)} MXN" }
+                                                    td { class: "py-3 px-4", "{p[\"plazo_meses\"].as_i64().unwrap_or(0)} meses" }
+                                                    td { class: "py-3 px-4", "${p[\"pago_mensual\"].as_f64().unwrap_or(0.0)} MXN" }
+                                                    td { class: "py-3 px-4", "{(p[\"tasa_interes\"].as_f64().unwrap_or(0.0) * 100.0) as i32}%" }
+                                                    td { class: "py-3 px-4",
+                                                        span {
+                                                            class: format!("px-2 py-1 rounded-full text-xs {}", if p["estado"].as_str() == Some("Activo") { "bg-green-900/50 text-green-400" } else { "bg-slate-700 text-slate-300" }),
+                                                            "{p[\"estado\"].as_str().unwrap_or(\"—\")}"
+                                                        }
+                                                    }
+                                                    td { class: "py-3 px-4", "{p[\"fecha\"].as_str().unwrap_or(\"—\")}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 },
             }
         }
