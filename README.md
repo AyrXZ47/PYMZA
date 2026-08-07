@@ -17,23 +17,36 @@ Plataforma SaaS B2B multi-tenant que perfila riesgo crediticio usando fuentes de
 Frontend (Dioxus WASM) ──HTTP/JSON──> Backend (Axum/Tokio) ──> MongoDB
 ```
 
-- **Frontend**: SPA en WebAssembly con Sidebar + MainArea (tabs Open Banking, Servicios, INE/OCR) + Modal + Toast
-- **Backend**: Dos endpoints REST (`POST /api/ocr`, `POST /api/update_status`) + pool de conexión a MongoDB
+- **Frontend**: SPA en WebAssembly con Sidebar + MainArea (Dashboard, Alta de Cliente, Cartera) + modal de 3 pasos para planes de pago. Todo el app vive en `frontend/src/main.rs`.
+- **Backend**: 9 endpoints REST (login, alta/búsqueda de clientes, evaluación y autorización de créditos, cartera y dashboard) + pool de conexión a MongoDB.
 
 ## Cómo Empezar
 
+Requisitos: Rust ≥ 1.80, `wasm32-unknown-unknown`, dioxus-cli (`dx`) y MongoDB.
+
 ```bash
-# Requisitos: Rust ≥ 1.80, Docker, wasm32-unknown-unknown, dioxus-cli
-
-# 1. MongoDB
+# 1. MongoDB — opción A (Docker)
 docker compose up -d
+#    MongoDB — opción B (NixOS, mongod directo)
+mongod --dbpath ~/.mongo-data --bind_ip 127.0.0.1 --port 27017
 
-# 2. Backend (http://127.0.0.1:3000)
+# 2. Seed demo (una vez por base nueva) — empresa: demo@pymza.mx / demo123
+mongosh < backend/scripts/seed.js
+
+# 3. Backend (http://127.0.0.1:3000)
 cd backend && cargo run
 
-# 3. Frontend (http://localhost:8080)
-cd frontend && dx serve --hot-reload
+# 4. Frontend (http://localhost:8080) — en NixOS primero regenera el CSS
+cd frontend && ./tailwind.sh && dx serve
 ```
+
+El backend lee `MONGODB_URI` de `backend/.env` (o variable de entorno). Para conectar a MongoDB Atlas, pega la connection string en `backend/.env`:
+
+```bash
+cd backend && echo 'MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/"' > .env
+```
+
+> **Nota NixOS**: `dx serve` sirve `assets/tailwind.css` tal cual (el `dx` de nixpkgs no compila Tailwind). Tras cambiar clases de Tailwind, regenera con `./tailwind.sh`.
 
 ## Estructura
 
@@ -41,15 +54,14 @@ cd frontend && dx serve --hot-reload
 PYMZA/
 ├── backend/          # Axum server (Rust)
 │   └── src/
-│       ├── main.rs   # Rutas y entry point
-│       ├── db.rs     # Conexión MongoDB
-│       ├── models/   # Structs del dominio
-│       └── services/ # Lógica de negocio
+│       ├── main.rs   # Rutas y entry point (handlers inline)
+│       ├── db.rs     # Conexión MongoDB (pool, lee MONGODB_URI)
+│       ├── models/   # Structs del dominio (empresa, cliente, credito)
+│       └── scripts/  # seed.js — datos demo
 ├── frontend/         # Dioxus WASM SPA
-│   └── src/
-│       ├── main.rs   # Componentes principales
-│       ├── components/
-│       └── views/
+│   ├── src/main.rs   # Toda la UI: Login + Sidebar + MainArea
+│   ├── tailwind.css  # Input de Tailwind
+│   └── tailwind.sh   # Compila Tailwind a assets/tailwind.css
 └── docker-compose.yml
 ```
 

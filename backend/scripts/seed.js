@@ -2,6 +2,12 @@
 // (idempotente: borra y reinserta las colecciones de demo)
 const db = db.getSiblingDB('pymza');
 
+// Guard: el seed hace dropDatabase(), solo debe correr contra la DB LOCAL.
+const host = db.getMongo().host || '';
+if (!host.includes('127.0.0.1') && !host.includes('localhost')) {
+  throw new Error('❌ Seed SOLO contra la DB local (127.0.0.1:27017). No tocar producción/Atlas.');
+}
+
 const EMPRESA = 'Ferretería El Tornillo';
 
 db.dropDatabase();

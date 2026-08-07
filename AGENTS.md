@@ -116,7 +116,8 @@ Collections: `empresas`, `clientes`, `solicitudes`, `planes_pago`, `dashboard_st
 
 ## Secrets / Config
 
-- `.env` file (gitignored) with `MONGODB_URI=""` — see `.env.example`
+- `backend/.env` (gitignored) with `MONGODB_URI=""` — see `.env.example`. dotenvy busca `.env` desde el cwd hacia arriba, así que sirve desde `backend/` o la raíz.
+- Never print or commit `MONGODB_URI`; to connect a real Atlas DB the user writes the URI into `backend/.env` themselves — verify connectivity via the backend log (`Pool de conexiones MongoDB inicializado`), never via echoing the secret.
 - Default MongoDB URI: `mongodb://127.0.0.1:27017`
 - No auth tokens, no JWT — login returns static `"token-temporal-123"`
 
