@@ -3,8 +3,8 @@
 const db = db.getSiblingDB('pymza');
 
 // Guard: el seed hace dropDatabase(), solo debe correr contra la DB LOCAL.
-const host = db.getMongo().host || '';
-if (!host.includes('127.0.0.1') && !host.includes('localhost')) {
+const uri = (db.getMongo()._uri || '').toLowerCase();
+if (!uri.includes('127.0.0.1') && !uri.includes('localhost')) {
   throw new Error('❌ Seed SOLO contra la DB local (127.0.0.1:27017). No tocar producción/Atlas.');
 }
 
