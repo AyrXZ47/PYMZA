@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 use std::sync::OnceLock;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
+const API_BASE: &str = "http://127.0.0.1:3000";
 
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -93,7 +94,7 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                                         "correo": correo,
                                         "password": password_val
                                     });
-                                    match http_client().post("http://127.0.0.1:3000/api/login")
+                                    match http_client().post(format!("{API_BASE}/api/login"))
                                         .json(&body)
                                         .send()
                                         .await
@@ -131,7 +132,7 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                                     "correo": correo,
                                     "password": password_val
                                 });
-                                match http_client().post("http://127.0.0.1:3000/api/login")
+                                match http_client().post(format!("{API_BASE}/api/login"))
                                     .json(&body)
                                     .send()
                                     .await
@@ -248,7 +249,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
         stats_loaded.set(true);
         spawn(async move {
             match http_client()
-                .get(&format!("http://127.0.0.1:3000/api/dashboard/{}", empresa))
+                .get(&format!("{API_BASE}/api/dashboard/{}", empresa))
                 .send()
                 .await
             {
@@ -279,7 +280,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
         cartera_loaded.set(true);
         spawn(async move {
             match http_client()
-                .get(&format!("http://127.0.0.1:3000/api/creditos/{}", empresa))
+                .get(&format!("{API_BASE}/api/creditos/{}", empresa))
                 .send()
                 .await
             {
@@ -375,7 +376,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                         show_plan_modal.set(false);
                                         spawn(async move {
                                             match http_client()
-                                                .get(&format!("http://127.0.0.1:3000/api/clientes/{}", curp))
+                                                .get(&format!("{API_BASE}/api/clientes/{}", curp))
                                                 .send()
                                                 .await
                                             {
@@ -471,7 +472,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                             "direccion": direccion,
                                                             "telefono": telefono,
                                                         });
-                                                        match http_client().post("http://127.0.0.1:3000/api/clientes")
+                                                        match http_client().post(format!("{API_BASE}/api/clientes"))
                                                             .json(&body)
                                                             .send()
                                                             .await
@@ -568,7 +569,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                     "monto": monto_num,
                                                                     "plazo_meses": plazo_num,
                                                                 });
-                                                                match http_client().post("http://127.0.0.1:3000/api/creditos/evaluar")
+                                                                match http_client().post(format!("{API_BASE}/api/creditos/evaluar"))
                                                                     .json(&body)
                                                                     .send()
                                                                     .await
@@ -710,7 +711,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                     "pago_mensual": pago_mensual,
                                                                     "tasa_interes": tasa,
                                                                 });
-                                                                if let Ok(res) = http_client().post("http://127.0.0.1:3000/api/creditos/autorizar")
+                                                                if let Ok(res) = http_client().post(format!("{API_BASE}/api/creditos/autorizar"))
                                                                     .json(&body)
                                                                     .send()
                                                                     .await
@@ -727,7 +728,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                             terms_accepted.set(false);
                                                                             // Refresh dashboard
                                                                             if let Ok(stats_res) = http_client()
-                                                                                .get(&format!("http://127.0.0.1:3000/api/dashboard/{}", empresa))
+                                                                                .get(&format!("{API_BASE}/api/dashboard/{}", empresa))
                                                                                 .send()
                                                                                 .await
                                                                             {
