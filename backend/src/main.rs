@@ -280,7 +280,7 @@ async fn autorizar_credito(
         pago_mensual: payload.pago_mensual,
         tasa_interes: payload.tasa_interes,
         estado: "Activo".to_string(),
-        fecha: "2026-07-22".to_string(),
+        fecha: chrono::Local::now().format("%Y-%m-%d").to_string(),
     };
 
     let coll_planes = client.database("pymza").collection::<PlanPago>("planes_pago");
