@@ -307,3 +307,77 @@ async fn obtener_dashboard(
         Err(_) => Json(serde_json::json!({"status": "error"})),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CURPS_SEED: [&str; 3] = [
+        "RAMJ920215MDFMZR03",
+        "GAML930528HDFLNR05",
+        "GARV850710MCHLRN09",
+    ];
+
+    #[test]
+    fn tasa_por_plazo_devuelve_la_tasa_esperada() {
+        assert_eq!(tasa_por_plazo(3), 0.03);
+        assert_eq!(tasa_por_plazo(6), 0.06);
+        assert_eq!(tasa_por_plazo(9), 0.10);
+        assert_eq!(tasa_por_plazo(12), 0.15);
+        assert_eq!(tasa_por_plazo(4), 0.05);
+    }
+
+    #[test]
+    fn es_curp_valida_acepta_las_curps_del_seed() {
+        for curp in CURPS_SEED {
+            assert!(es_curp_valida(curp), "CURP del seed debe ser válida: {}", curp);
+        }
+    }
+
+    #[test]
+    fn es_curp_valida_rechaza_curps_invalidas() {
+        assert!(!es_curp_valida(""));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0")); // 17 chars
+        assert!(!es_curp_valida("RAMJ920215MDFMZR031")); // 19 chars
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0!")); // char no alfanumérico
+    }
+
+    #[test]
+    fn generar_plan_pagos_mantiene_invariantes() {
+        let monto = 10000.0;
+        let plazo = 3;
+        let plan = generar_plan_pagos(monto, plazo, tasa_por_plazo(plazo));
+
+        assert_eq!(plan.len(), plazo as usize);
+        assert_eq!(plan.first().unwrap().mes, 1);
+        assert_eq!(plan.last().unwrap().mes, plazo);
+
+        let suma_capital: f64 = plan.iter().map(|p| p.capital).sum();
+        // ponytail: cada capital mensual se redondea al centavo, así que la suma
+        // puede desviarse del monto hasta 0.005 por mes; el techo escala con el plazo.
+        assert!(
+            (suma_capital - monto).abs() <= 0.005 * plazo as f64 + 0.001,
+            "suma capital {} no coincide con monto {}", suma_capital, monto
+        );
+
+        assert_eq!(plan.last().unwrap().saldo_restante, 0.0);
+
+        for p in &plan {
+            assert!(p.saldo_restante >= 0.0, "saldo negativo en mes {}", p.mes);
+            for campo in [p.pago, p.interes, p.capital, p.saldo_restante] {
+                assert!(
+                    ((campo * 100.0) - (campo * 100.0).round()).abs() < 1e-6,
+                    "campo sin redondear a 2 decimales en mes {}: {campo}",
+                    p.mes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generar_plan_pagos_suma_capital_exacta_sin_redondeo() {
+        let plan = generar_plan_pagos(12000.0, 3, 0.03);
+        let suma_capital: f64 = plan.iter().map(|p| p.capital).sum();
+        assert_eq!(suma_capital, 12000.0);
+    }
+}
