@@ -58,6 +58,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/ocr", post(process_ocr))
         .route("/api/login", post(login_empresa))
+        .route("/api/empresas", post(alta_empresa))
         .route("/api/clientes", post(crear_cliente))
         .route("/api/clientes/:curp", get(buscar_cliente))
         .route("/api/creditos/evaluar", post(evaluar_credito))
@@ -102,6 +103,77 @@ async fn login_empresa(
                 "message": "Credenciales inválidas"
             }))
         }
+    }
+}
+
+fn es_correo_valido(correo: &str) -> bool {
+    if correo.contains(' ') {
+        return false;
+    }
+    let mut partes = correo.split('@');
+    let local = partes.next().unwrap_or("");
+    let dominio = partes.next().unwrap_or("");
+    let tiene_un_solo_arroba = partes.next().is_none();
+    !local.is_empty() && dominio.contains('.') && tiene_un_solo_arroba
+}
+
+async fn alta_empresa(
+    State(client): State<mongodb::Client>,
+    Json(payload): Json<models::empresa::Empresa>,
+) -> Json<serde_json::Value> {
+    if !es_correo_valido(&payload.correo) {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Correo inválido"
+        }));
+    }
+    if payload.password.chars().count() < 8 {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "La contraseña debe tener al menos 8 caracteres"
+        }));
+    }
+
+    let coll = client.database("pymza").collection::<models::empresa::Empresa>("empresas");
+
+    if let Ok(Some(_)) = coll.find_one(mongodb::bson::doc! { "correo": &payload.correo }, None).await {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Ya existe una empresa registrada con ese correo"
+        }));
+    }
+
+    match coll.insert_one(&payload, None).await {
+        Ok(_) => Json(serde_json::json!({
+            "status": "success",
+            "empresa": {
+                "correo": payload.correo,
+                "nombre_empresa": payload.nombre_empresa,
+            }
+        })),
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({ "status": "error", "message": "Error al registrar la empresa" }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::es_correo_valido;
+
+    #[test]
+    fn correo_valido() {
+        assert!(es_correo_valido("demo@pymza.mx"));
+    }
+
+    #[test]
+    fn correo_invalido() {
+        assert!(!es_correo_valido("sin-arroba"));
+        assert!(!es_correo_valido("a@b")); // sin dominio con punto
+        assert!(!es_correo_valido("@pymza.mx")); // sin parte local
+        assert!(!es_correo_valido("a b@pymza.mx")); // con espacio
+        assert!(!es_correo_valido("a@b@c.mx")); // más de un @
     }
 }
 
