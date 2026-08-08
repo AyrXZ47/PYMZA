@@ -92,14 +92,14 @@ cd frontend && ./tailwind.sh        # o: ./tailwind.sh --watch durante desarroll
 
 ## API Endpoints (backend)
 
-Collections: `empresas`, `clientes`, `solicitudes`, `planes_pago`, `dashboard_stats`.
+Collections: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/login` | Empresa auth (correo + password) |
+| POST | `/api/empresas` | Alta de empresa nueva (valida correo y contraseña, evita duplicados) |
 | GET | `/api/clientes/:curp` | Lookup client by CURP in PYMZA network |
 | POST | `/api/clientes` | Alta de cliente nuevo (valida CURP, evita duplicados; score base 550) |
-| POST | `/api/update_status` | Update `solicitudes` status |
 | POST | `/api/ocr` | OCR validation (placeholder, fixed JSON) |
 | POST | `/api/creditos/evaluar` | Evaluate credit: rate by plazo (3m=3% … 12m=15%), approve/reject by score, build payment plan |
 | POST | `/api/creditos/autorizar` | Insert `planes_pago` + upsert `dashboard_stats` |

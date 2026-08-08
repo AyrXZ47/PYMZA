@@ -6,7 +6,7 @@ Base URL: `http://127.0.0.1:3000`
 
 Formato de intercambio: `application/json`.
 
-Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `solicitudes`, `planes_pago`, `dashboard_stats`.
+Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
 
 > Autenticación: no hay tokens reales. El login devuelve un token estático `"token-temporal-123"` y las demás rutas no lo validan.
 
@@ -42,6 +42,56 @@ Autentica una empresa (correo + password).
 ```
 
 **Colección Mongo:** `empresas` (busca por `correo` + `password`).
+
+---
+
+## POST `/api/empresas`
+
+Alta de una empresa nueva (registro). Valida correo (1 `@`, dominio con punto, sin espacios) y contraseña de al menos 8 caracteres; rechaza correos duplicados.
+
+**Payload:**
+```json
+{
+  "correo": "nueva@pymza.mx",
+  "password": "clave1234",
+  "nombre_empresa": "Empresa Nueva S.A. de C.V."
+}
+```
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "empresa": {
+    "correo": "nueva@pymza.mx",
+    "nombre_empresa": "Empresa Nueva S.A. de C.V."
+  }
+}
+```
+
+**Respuestas (error):**
+```json
+{
+  "status": "error",
+  "message": "Correo inválido"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "La contraseña debe tener al menos 8 caracteres"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "Ya existe una empresa registrada con ese correo"
+}
+```
+
+**Colección Mongo:** `empresas` (inserta; la respuesta no incluye la contraseña).
 
 ---
 
@@ -133,29 +183,6 @@ Alta de un cliente nuevo. Valida el formato de CURP (18 caracteres alfanumérico
 ```
 
 **Colección Mongo:** `clientes` (inserta).
-
----
-
-## POST `/api/update_status`
-
-Actualiza el estado de una solicitud.
-
-**Payload:**
-```json
-{
-  "id": "SOL-001",
-  "estado": "Aprobado"
-}
-```
-
-**Respuesta (siempre, aunque el documento no exista):**
-```json
-{
-  "status": "success"
-}
-```
-
-**Colección Mongo:** `solicitudes` (actualiza el campo `estado` por `id`).
 
 ---
 
