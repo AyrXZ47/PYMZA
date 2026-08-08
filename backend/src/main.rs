@@ -3,12 +3,13 @@ mod models;
 
 use axum::{
     extract::State,
+    http::{HeaderValue, Method},
     routing::{post, get},
     Json,
     Router,
 };
 use serde::{Deserialize, Serialize};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 use std::net::SocketAddr;
 use futures::StreamExt;
 use models::credito::{EvaluarReq, AutorizarReq, PlanPago, EvaluarRes, PagoInfo, DashboardStats};
@@ -65,12 +66,25 @@ async fn main() {
         .route("/api/creditos/autorizar", post(autorizar_credito))
         .route("/api/creditos/:empresa", get(obtener_creditos))
         .route("/api/dashboard/:empresa", get(obtener_dashboard))
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer())
         .with_state(db_client);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("Servidor PYMZA escuchando en {}", addr);
     axum::Server::bind(&addr).serve(app.into_make_service()).await.unwrap();
+}
+
+fn cors_layer() -> CorsLayer {
+    // ponytail: allowlist fija de dev local (frontend `dx serve` en :8080, API en
+    // 127.0.0.1:3000). Para producción, sacar los orígenes a una env var
+    // (p. ej. ALLOWED_ORIGINS) y construir el array desde ahí.
+    CorsLayer::new()
+        .allow_origin([
+            HeaderValue::from_static("http://localhost:8080"),
+            HeaderValue::from_static("http://127.0.0.1:8080"),
+        ])
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any)
 }
 
 async fn process_ocr(State(_client): State<mongodb::Client>) -> Json<serde_json::Value> {
