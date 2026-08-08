@@ -33,6 +33,13 @@ struct PagoInfo {
     saldo_restante: f64,
 }
 
+fn alerta_info(cliente: &serde_json::Value) -> Option<(String, String)> {
+    let alerta = cliente.get("alerta")?.as_object()?;
+    let motivo = alerta.get("motivo").and_then(|m| m.as_str()).unwrap_or("Morosidad reportada por otra empresa");
+    let empresa = alerta.get("empresa").and_then(|e| e.as_str()).unwrap_or("Empresa no identificada");
+    Some((motivo.to_string(), empresa.to_string()))
+}
+
 fn main() {
     dioxus::launch(App);
 }
@@ -169,6 +176,35 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::alerta_info;
+
+    #[test]
+    fn alerta_info_con_alerta_devuelve_motivo_y_empresa() {
+        let cliente = serde_json::json!({
+            "curp": "GACM940101HDFRRR07",
+            "alerta": { "empresa": "Abarrotes Don Pepe", "motivo": "2 pagos vencidos" }
+        });
+        assert_eq!(
+            alerta_info(&cliente),
+            Some(("2 pagos vencidos".to_string(), "Abarrotes Don Pepe".to_string()))
+        );
+    }
+
+    #[test]
+    fn alerta_info_sin_alerta_devuelve_none() {
+        let cliente = serde_json::json!({ "curp": "GACM940101HDFRRR07" });
+        assert_eq!(alerta_info(&cliente), None);
+    }
+
+    #[test]
+    fn alerta_info_nula_devuelve_none() {
+        let cliente = serde_json::json!({ "curp": "GACM940101HDFRRR07", "alerta": null });
+        assert_eq!(alerta_info(&cliente), None);
     }
 }
 
@@ -413,6 +449,19 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     class: "bg-green-900/20 border border-green-700/50 rounded-xl p-6 max-w-lg",
                                     div { class: "flex items-center gap-2 mb-4",
                                         div { class: "text-green-400 font-semibold", "¡Cliente encontrado en Red PYMZA!" }
+                                    }
+                                    if let Some((motivo, empresa)) = alerta_info(&cliente) {
+                                        div {
+                                            class: "mb-4 border border-amber-500/60 bg-amber-950/50 rounded-lg p-4",
+                                            div { class: "flex items-center gap-2 text-amber-400 font-semibold",
+                                                svg { class: "w-5 h-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                                                    path { d: "M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" }
+                                                }
+                                                "Alerta de Morosidad"
+                                            }
+                                            div { class: "mt-2 text-amber-200 text-sm", "{motivo}" }
+                                            div { class: "mt-1 text-amber-400/90 text-xs", "Reportada por: {empresa}" }
+                                        }
                                     }
                                     div { class: "grid grid-cols-2 gap-4",
                                         div {
