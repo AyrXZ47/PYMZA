@@ -137,7 +137,7 @@ async fn crear_cliente(
     if !es_curp_valida(&payload.curp) {
         return Json(serde_json::json!({
             "status": "error",
-            "message": "CURP inválida: deben ser 18 caracteres alfanuméricos"
+            "message": "CURP inválida: debe tener estructura CURP válida (18 caracteres, mayúsculas, fecha, sexo y entidad correctos)"
         }));
     }
 
@@ -190,8 +190,82 @@ async fn obtener_creditos(
     }
 }
 
+const ENTIDADES_CURP: [&str; 33] = [
+    "AS", "BC", "BS", "CC", "CL", "CM", "CS", "CH", "DF", "DG",
+    "GT", "GR", "HG", "JC", "MC", "MN", "MS", "NT", "NL", "OC",
+    "PL", "QT", "QR", "SP", "SL", "SR", "TC", "TS", "TL", "VZ",
+    "YN", "ZS", "NE",
+];
+
 fn es_curp_valida(curp: &str) -> bool {
-    curp.len() == 18 && curp.chars().all(|c| c.is_ascii_alphanumeric())
+    let b = curp.as_bytes();
+    if b.len() != 18 {
+        return false;
+    }
+    if !b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        return false;
+    }
+    // Posiciones 1-4: letras (iniciales de apellidos y nombre)
+    if !b[..4].iter().all(|c| c.is_ascii_uppercase()) {
+        return false;
+    }
+    // Posiciones 5-10: fecha de nacimiento YYMMDD
+    if !b[4..10].iter().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let mes = (b[6] - b'0') as i32 * 10 + (b[7] - b'0') as i32;
+    let dia = (b[8] - b'0') as i32 * 10 + (b[9] - b'0') as i32;
+    if !(1..=12).contains(&mes) || !(1..=31).contains(&dia) {
+        return false;
+    }
+    // Posición 11: sexo
+    if b[10] != b'H' && b[10] != b'M' {
+        return false;
+    }
+    // Posiciones 12-13: entidad federativa de nacimiento
+    let entidad = std::str::from_utf8(&b[11..13]).expect("CURP ASCII");
+    ENTIDADES_CURP.contains(&entidad)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::es_curp_valida;
+
+    #[test]
+    fn curps_del_seed_son_validas() {
+        for curp in ["RAMJ920215MDFMZR03", "GAML930528HDFLNR05", "GARV850710MCHLRN09"] {
+            assert!(es_curp_valida(curp), "{} debería ser válida", curp);
+        }
+    }
+
+    #[test]
+    fn rechaza_minusculas() {
+        assert!(!es_curp_valida("ramj920215mdfmzr03"));
+    }
+
+    #[test]
+    fn rechaza_longitud_incorrecta() {
+        assert!(!es_curp_valida(""));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0"));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR030"));
+    }
+
+    #[test]
+    fn rechaza_fecha_invalida() {
+        assert!(!es_curp_valida("RAMJ921315MDFMZR03")); // mes 13
+        assert!(!es_curp_valida("RAMJ920232MDFMZR03")); // día 32
+        assert!(!es_curp_valida("RAMJ92M215MDFMZR03")); // año con letra
+    }
+
+    #[test]
+    fn rechaza_sexo_invalido() {
+        assert!(!es_curp_valida("RAMJ920215XDFMZR03"));
+    }
+
+    #[test]
+    fn rechaza_entidad_invalida() {
+        assert!(!es_curp_valida("RAMJ920215MXXMZR03"));
+    }
 }
 
 async fn evaluar_credito(
