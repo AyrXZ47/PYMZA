@@ -136,6 +136,51 @@ Busca un cliente existente en la red PYMZA por su CURP.
 
 ---
 
+## POST `/api/clientes/:curp/reportar`
+
+Reporta morosidad de un cliente a la red PYMZA (alerta temprana). Marca al cliente con la alerta; la busca `GET /api/clientes/:curp` posterior la devuelve en el campo `alerta`.
+
+**Parámetro de ruta:** `:curp` — CURP de 18 caracteres.
+
+**Payload:**
+```json
+{
+  "empresa": "Ferretería El Tornillo",
+  "motivo": "Desapareció con deuda pendiente"
+}
+```
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "alerta": {
+    "empresa": "Ferretería El Tornillo",
+    "motivo": "Desapareció con deuda pendiente"
+  }
+}
+```
+
+**Respuesta (campos vacíos):**
+```json
+{
+  "status": "error",
+  "message": "Empresa y motivo son obligatorios"
+}
+```
+
+**Respuesta (cliente inexistente):**
+```json
+{
+  "status": "not_found",
+  "message": "Cliente no existe en la red PYMZA"
+}
+```
+
+**Colección Mongo:** `clientes` (actualiza el campo `alerta`).
+
+---
+
 ## POST `/api/clientes`
 
 Alta de un cliente nuevo. Valida el formato de CURP (18 caracteres alfanuméricos) y evita duplicados. El score base es `550` y el nivel de riesgo `"Medio"`.
