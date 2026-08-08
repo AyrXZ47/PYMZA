@@ -41,18 +41,14 @@ Not lazy about: input validation at trust boundaries, error handling that preven
 PYMZA/
 ├── backend/          # Axum server
 │   └── src/
-│       ├── main.rs   # ENTRYPOINT: all 7 routes live here (handlers are inline, not in services/)
+│       ├── main.rs   # ENTRYPOINT: all 7 routes live here (handlers are inline)
 │       ├── db.rs     # MongoDB pool (max 10); hardcodes 127.0.0.1 to avoid IPv6 timeout
-│       ├── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
-│       └── services/ # ocr_validation.rs / trust_score.rs / early_warning.rs = placeholders, NOT compiled
+│       └── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
 ├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~830 lines), no router
 │   ├── src/
-│   │   ├── main.rs   # Entrypoint: Login + Sidebar + MainArea (MenuState enum, conditional render)
-│   │   ├── components/  # STALE Dioxus template files — not referenced by main.rs
-│   │   └── views/       # STALE Dioxus template files — not referenced by main.rs
+│   │   └── main.rs   # Entrypoint: Login + Sidebar + MainArea (MenuState enum, conditional render)
 │   ├── tailwind.css  # Tailwind input (tracked, 1 line). `dx serve` auto-compiles → assets/tailwind.css
 │   └── clippy.toml   # Only lint config in the repo (Dioxus signal read-locks over await)
-├── main.rs           # STALE — no Cargo.toml at root, never compiled. Ignore it.
 └── docker-compose.yml
 ```
 
@@ -85,15 +81,11 @@ cd frontend && ./tailwind.sh        # o: ./tailwind.sh --watch durante desarroll
 
 ## Gotchas
 
-- **Root `main.rs` is stale** and not part of any crate. Real entrypoints: `backend/src/main.rs`, `frontend/src/main.rs`.
-- **`backend/src/services/` is dead code.** The 3 files only have placeholder functions and `mod.rs` is empty; `main.rs` never declares `mod services`. Route handlers are written inline in `main.rs` — follow that pattern.
-- **`backend/src/models/score.rs`, `alert.rs`, `client.rs` reference `chrono`, which is NOT in `Cargo.toml`.** They're uncompilable but harmless because `models/mod.rs` doesn't include them. Only `empresa.rs`, `cliente.rs`, `credito.rs` are wired in.
 - **Building the backend needs OpenSSL dev libs** on Linux (mongodb driver ships with `openssl-tls` feature).
 - **`Cargo.lock` is gitignored** (root `.gitignore`).
 - **Frontend uses Dioxus 0.7** — no `cx`, `Scope`, `use_state`. Signals, `#[component]`, `rsx!`, `spawn`. `frontend/AGENTS.md` is the auto-loaded Dioxus 0.7 API reference — follow it.
 - **`dioxus` is pinned to `=0.7.9`** in `frontend/Cargo.toml` to match the `dx` CLI that ships in nixpkgs (0.7.9). Bumping one without the other triggers `dx` version-mismatch warnings.
 - **No router:** app uses a `MenuState` enum + conditional rendering. The `router` feature is enabled in `frontend/Cargo.toml` but unused.
-- **`frontend/components/` and `views/` are unwired template leftovers** (from the Dioxus jumpstart). Don't put new code there — put it in `main.rs`.
 - **`frontend/tailwind.css`** (tracked) is the Tailwind input; the compiled `assets/tailwind.css` is gitignored/generated.
 - **No tests, no CI.** Only lint config is `frontend/clippy.toml`. `cargo test`/`dx check` are the only verification available.
 - **Login has no security** — password compared in plaintext against the `empresas` collection; token is static `"token-temporal-123"`.
