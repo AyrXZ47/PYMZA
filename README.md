@@ -18,7 +18,7 @@ Frontend (Dioxus WASM) ──HTTP/JSON──> Backend (Axum/Tokio) ──> Mongo
 ```
 
 - **Frontend**: SPA en WebAssembly con Sidebar + MainArea (Dashboard, Alta de Cliente, Cartera) + modal de 3 pasos para planes de pago. Todo el app vive en `frontend/src/main.rs`.
-- **Backend**: 9 endpoints REST (login, alta/búsqueda de clientes, evaluación y autorización de créditos, cartera y dashboard) + pool de conexión a MongoDB.
+- **Backend**: 9 endpoints REST (login, alta de empresas, alta/búsqueda de clientes, evaluación y autorización de créditos, cartera y dashboard) + pool de conexión a MongoDB.
 
 ## Cómo Empezar
 

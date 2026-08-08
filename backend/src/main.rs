@@ -15,9 +15,6 @@ use models::credito::{EvaluarReq, AutorizarReq, PlanPago, EvaluarRes, PagoInfo, 
 use models::cliente::{Cliente, CrearClienteReq};
 
 #[derive(Deserialize, Serialize)]
-struct UpdateStatusPayload { id: String, estado: String }
-
-#[derive(Deserialize, Serialize)]
 struct LoginPayload {
     correo: String,
     password: String,
@@ -59,9 +56,9 @@ async fn main() {
     let db_client = db::connect().await.expect("Fallo crítico en conexión DB");
 
     let app = Router::new()
-        .route("/api/update_status", post(update_status))
         .route("/api/ocr", post(process_ocr))
         .route("/api/login", post(login_empresa))
+        .route("/api/empresas", post(alta_empresa))
         .route("/api/clientes", post(crear_cliente))
         .route("/api/clientes/:curp", get(buscar_cliente))
         .route("/api/creditos/evaluar", post(evaluar_credito))
@@ -74,19 +71,6 @@ async fn main() {
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("Servidor PYMZA escuchando en {}", addr);
     axum::Server::bind(&addr).serve(app.into_make_service()).await.unwrap();
-}
-
-async fn update_status(
-    State(client): State<mongodb::Client>,
-    Json(payload): Json<UpdateStatusPayload>
-) -> Json<serde_json::Value> {
-    let coll = client.database("pymza").collection::<mongodb::bson::Document>("solicitudes");
-    let _ = coll.update_one(
-        mongodb::bson::doc! { "id": payload.id },
-        mongodb::bson::doc! { "$set": { "estado": payload.estado } },
-        None
-    ).await;
-    Json(serde_json::json!({"status": "success"}))
 }
 
 async fn process_ocr(State(_client): State<mongodb::Client>) -> Json<serde_json::Value> {
@@ -118,6 +102,58 @@ async fn login_empresa(
                 "status": "error",
                 "message": "Credenciales inválidas"
             }))
+        }
+    }
+}
+
+fn es_correo_valido(correo: &str) -> bool {
+    if correo.contains(' ') {
+        return false;
+    }
+    let mut partes = correo.split('@');
+    let local = partes.next().unwrap_or("");
+    let dominio = partes.next().unwrap_or("");
+    let tiene_un_solo_arroba = partes.next().is_none();
+    !local.is_empty() && dominio.contains('.') && tiene_un_solo_arroba
+}
+
+async fn alta_empresa(
+    State(client): State<mongodb::Client>,
+    Json(payload): Json<models::empresa::Empresa>,
+) -> Json<serde_json::Value> {
+    if !es_correo_valido(&payload.correo) {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Correo inválido"
+        }));
+    }
+    if payload.password.chars().count() < 8 {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "La contraseña debe tener al menos 8 caracteres"
+        }));
+    }
+
+    let coll = client.database("pymza").collection::<models::empresa::Empresa>("empresas");
+
+    if let Ok(Some(_)) = coll.find_one(mongodb::bson::doc! { "correo": &payload.correo }, None).await {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Ya existe una empresa registrada con ese correo"
+        }));
+    }
+
+    match coll.insert_one(&payload, None).await {
+        Ok(_) => Json(serde_json::json!({
+            "status": "success",
+            "empresa": {
+                "correo": payload.correo,
+                "nombre_empresa": payload.nombre_empresa,
+            }
+        })),
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({ "status": "error", "message": "Error al registrar la empresa" }))
         }
     }
 }
@@ -154,7 +190,7 @@ async fn crear_cliente(
     if !es_curp_valida(&payload.curp) {
         return Json(serde_json::json!({
             "status": "error",
-            "message": "CURP inválida: deben ser 18 caracteres alfanuméricos"
+            "message": "CURP inválida: debe tener estructura CURP válida (18 caracteres, mayúsculas, fecha, sexo y entidad correctos)"
         }));
     }
 
@@ -207,8 +243,41 @@ async fn obtener_creditos(
     }
 }
 
+const ENTIDADES_CURP: [&str; 33] = [
+    "AS", "BC", "BS", "CC", "CL", "CM", "CS", "CH", "DF", "DG",
+    "GT", "GR", "HG", "JC", "MC", "MN", "MS", "NT", "NL", "OC",
+    "PL", "QT", "QR", "SP", "SL", "SR", "TC", "TS", "TL", "VZ",
+    "YN", "ZS", "NE",
+];
+
 fn es_curp_valida(curp: &str) -> bool {
-    curp.len() == 18 && curp.chars().all(|c| c.is_ascii_alphanumeric())
+    let b = curp.as_bytes();
+    if b.len() != 18 {
+        return false;
+    }
+    if !b.iter().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        return false;
+    }
+    // Posiciones 1-4: letras (iniciales de apellidos y nombre)
+    if !b[..4].iter().all(|c| c.is_ascii_uppercase()) {
+        return false;
+    }
+    // Posiciones 5-10: fecha de nacimiento YYMMDD
+    if !b[4..10].iter().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let mes = (b[6] - b'0') as i32 * 10 + (b[7] - b'0') as i32;
+    let dia = (b[8] - b'0') as i32 * 10 + (b[9] - b'0') as i32;
+    if !(1..=12).contains(&mes) || !(1..=31).contains(&dia) {
+        return false;
+    }
+    // Posición 11: sexo
+    if b[10] != b'H' && b[10] != b'M' {
+        return false;
+    }
+    // Posiciones 12-13: entidad federativa de nacimiento
+    let entidad = std::str::from_utf8(&b[11..13]).expect("CURP ASCII");
+    ENTIDADES_CURP.contains(&entidad)
 }
 
 async fn evaluar_credito(
@@ -280,7 +349,7 @@ async fn autorizar_credito(
         pago_mensual: payload.pago_mensual,
         tasa_interes: payload.tasa_interes,
         estado: "Activo".to_string(),
-        fecha: "2026-07-22".to_string(),
+        fecha: chrono::Local::now().format("%Y-%m-%d").to_string(),
     };
 
     let coll_planes = client.database("pymza").collection::<PlanPago>("planes_pago");
@@ -322,5 +391,129 @@ async fn obtener_dashboard(
             "stats": { "empresa": empresa.clone(), "creditos_activos": 0, "capital_prestado": 0.0, "proximos_cobros": 0 }
         })),
         Err(_) => Json(serde_json::json!({"status": "error"})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CURPS_SEED: [&str; 3] = [
+        "RAMJ920215MDFMZR03",
+        "GAML930528HDFLNR05",
+        "GARV850710MCHLRN09",
+    ];
+
+    #[test]
+    fn tasa_por_plazo_devuelve_la_tasa_esperada() {
+        assert_eq!(tasa_por_plazo(3), 0.03);
+        assert_eq!(tasa_por_plazo(6), 0.06);
+        assert_eq!(tasa_por_plazo(9), 0.10);
+        assert_eq!(tasa_por_plazo(12), 0.15);
+        assert_eq!(tasa_por_plazo(4), 0.05);
+    }
+
+    #[test]
+    fn es_curp_valida_acepta_las_curps_del_seed() {
+        for curp in CURPS_SEED {
+            assert!(es_curp_valida(curp), "CURP del seed debe ser válida: {}", curp);
+        }
+    }
+
+    #[test]
+    fn es_curp_valida_rechaza_curps_invalidas() {
+        assert!(!es_curp_valida(""));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0")); // 17 chars
+        assert!(!es_curp_valida("RAMJ920215MDFMZR031")); // 19 chars
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0!")); // char no alfanumérico
+    }
+
+    #[test]
+    fn correo_valido() {
+        assert!(es_correo_valido("demo@pymza.mx"));
+    }
+
+    #[test]
+    fn correo_invalido() {
+        assert!(!es_correo_valido("sin-arroba"));
+        assert!(!es_correo_valido("a@b")); // sin dominio con punto
+        assert!(!es_correo_valido("@pymza.mx")); // sin parte local
+        assert!(!es_correo_valido("a b@pymza.mx")); // con espacio
+        assert!(!es_correo_valido("a@b@c.mx")); // más de un @
+    }
+
+    #[test]
+    fn curps_del_seed_son_validas() {
+        for curp in ["RAMJ920215MDFMZR03", "GAML930528HDFLNR05", "GARV850710MCHLRN09"] {
+            assert!(es_curp_valida(curp), "{} debería ser válida", curp);
+        }
+    }
+
+    #[test]
+    fn rechaza_minusculas() {
+        assert!(!es_curp_valida("ramj920215mdfmzr03"));
+    }
+
+    #[test]
+    fn rechaza_longitud_incorrecta() {
+        assert!(!es_curp_valida(""));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0"));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR030"));
+    }
+
+    #[test]
+    fn rechaza_fecha_invalida() {
+        assert!(!es_curp_valida("RAMJ921315MDFMZR03")); // mes 13
+        assert!(!es_curp_valida("RAMJ920232MDFMZR03")); // día 32
+        assert!(!es_curp_valida("RAMJ92M215MDFMZR03")); // año con letra
+    }
+
+    #[test]
+    fn rechaza_sexo_invalido() {
+        assert!(!es_curp_valida("RAMJ920215XDFMZR03"));
+    }
+
+    #[test]
+    fn rechaza_entidad_invalida() {
+        assert!(!es_curp_valida("RAMJ920215MXXMZR03"));
+    }
+
+    #[test]
+    fn generar_plan_pagos_mantiene_invariantes() {
+        let monto = 10000.0;
+        let plazo = 3;
+        let plan = generar_plan_pagos(monto, plazo, tasa_por_plazo(plazo));
+
+        assert_eq!(plan.len(), plazo as usize);
+        assert_eq!(plan.first().unwrap().mes, 1);
+        assert_eq!(plan.last().unwrap().mes, plazo);
+
+        let suma_capital: f64 = plan.iter().map(|p| p.capital).sum();
+        // ponytail: cada capital mensual se redondea al centavo, así que la suma
+        // puede desviarse del monto hasta 0.005 por mes; el techo escala con el plazo.
+        assert!(
+            (suma_capital - monto).abs() <= 0.005 * plazo as f64 + 0.001,
+            "suma capital {} no coincide con monto {}", suma_capital, monto
+        );
+
+        assert_eq!(plan.last().unwrap().saldo_restante, 0.0);
+
+        for p in &plan {
+            assert!(p.saldo_restante >= 0.0, "saldo negativo en mes {}", p.mes);
+            for campo in [p.pago, p.interes, p.capital, p.saldo_restante] {
+                assert!(
+                    ((campo * 100.0) - (campo * 100.0).round()).abs() < 1e-6,
+                    "campo sin redondear a 2 decimales en mes {}: {campo}",
+                    p.mes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generar_plan_pagos_suma_capital_exacta_sin_redondeo() {
+        let plan = generar_plan_pagos(12000.0, 3, 0.03);
+        let suma_capital: f64 = plan.iter().map(|p| p.capital).sum();
+        assert_eq!(suma_capital, 12000.0);
     }
 }
