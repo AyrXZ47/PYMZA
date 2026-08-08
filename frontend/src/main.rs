@@ -48,7 +48,7 @@ fn App() -> Element {
         if is_authenticated() {
             div {
                 class: "flex h-screen text-white",
-                Sidebar { current_company, active_menu }
+                Sidebar { current_company, active_menu, is_authenticated }
                 MainArea { current_company, active_menu }
             }
         } else {
@@ -173,7 +173,7 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
 }
 
 #[component]
-fn Sidebar(current_company: Signal<String>, mut active_menu: Signal<MenuState>) -> Element {
+fn Sidebar(mut current_company: Signal<String>, mut active_menu: Signal<MenuState>, mut is_authenticated: Signal<bool>) -> Element {
     rsx! {
         div {
             class: "bg-slate-900 w-64 flex flex-col items-center justify-start p-4",
@@ -210,6 +210,18 @@ fn Sidebar(current_company: Signal<String>, mut active_menu: Signal<MenuState>) 
                     }
                     "Cartera"
                 }
+            }
+            button {
+                class: "mt-auto w-full p-3 rounded-lg flex items-center justify-center gap-2 text-red-400 hover:bg-red-900/20 hover:text-red-300 transition-colors",
+                onclick: move |_| {
+                    is_authenticated.set(false);
+                    current_company.set(String::new());
+                    active_menu.set(MenuState::Dashboard);
+                },
+                svg { class: "w-5 h-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                    path { d: "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" }
+                }
+                "Cerrar Sesión"
             }
         }
     }
