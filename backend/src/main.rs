@@ -158,25 +158,6 @@ async fn alta_empresa(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::es_correo_valido;
-
-    #[test]
-    fn correo_valido() {
-        assert!(es_correo_valido("demo@pymza.mx"));
-    }
-
-    #[test]
-    fn correo_invalido() {
-        assert!(!es_correo_valido("sin-arroba"));
-        assert!(!es_correo_valido("a@b")); // sin dominio con punto
-        assert!(!es_correo_valido("@pymza.mx")); // sin parte local
-        assert!(!es_correo_valido("a b@pymza.mx")); // con espacio
-        assert!(!es_correo_valido("a@b@c.mx")); // más de un @
-    }
-}
-
 async fn buscar_cliente(
     State(client): State<mongodb::Client>,
     axum::extract::Path(curp): axum::extract::Path<String>
@@ -297,47 +278,6 @@ fn es_curp_valida(curp: &str) -> bool {
     // Posiciones 12-13: entidad federativa de nacimiento
     let entidad = std::str::from_utf8(&b[11..13]).expect("CURP ASCII");
     ENTIDADES_CURP.contains(&entidad)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::es_curp_valida;
-
-    #[test]
-    fn curps_del_seed_son_validas() {
-        for curp in ["RAMJ920215MDFMZR03", "GAML930528HDFLNR05", "GARV850710MCHLRN09"] {
-            assert!(es_curp_valida(curp), "{} debería ser válida", curp);
-        }
-    }
-
-    #[test]
-    fn rechaza_minusculas() {
-        assert!(!es_curp_valida("ramj920215mdfmzr03"));
-    }
-
-    #[test]
-    fn rechaza_longitud_incorrecta() {
-        assert!(!es_curp_valida(""));
-        assert!(!es_curp_valida("RAMJ920215MDFMZR0"));
-        assert!(!es_curp_valida("RAMJ920215MDFMZR030"));
-    }
-
-    #[test]
-    fn rechaza_fecha_invalida() {
-        assert!(!es_curp_valida("RAMJ921315MDFMZR03")); // mes 13
-        assert!(!es_curp_valida("RAMJ920232MDFMZR03")); // día 32
-        assert!(!es_curp_valida("RAMJ92M215MDFMZR03")); // año con letra
-    }
-
-    #[test]
-    fn rechaza_sexo_invalido() {
-        assert!(!es_curp_valida("RAMJ920215XDFMZR03"));
-    }
-
-    #[test]
-    fn rechaza_entidad_invalida() {
-        assert!(!es_curp_valida("RAMJ920215MXXMZR03"));
-    }
 }
 
 async fn evaluar_credito(
@@ -486,6 +426,56 @@ mod tests {
         assert!(!es_curp_valida("RAMJ920215MDFMZR0")); // 17 chars
         assert!(!es_curp_valida("RAMJ920215MDFMZR031")); // 19 chars
         assert!(!es_curp_valida("RAMJ920215MDFMZR0!")); // char no alfanumérico
+    }
+
+    #[test]
+    fn correo_valido() {
+        assert!(es_correo_valido("demo@pymza.mx"));
+    }
+
+    #[test]
+    fn correo_invalido() {
+        assert!(!es_correo_valido("sin-arroba"));
+        assert!(!es_correo_valido("a@b")); // sin dominio con punto
+        assert!(!es_correo_valido("@pymza.mx")); // sin parte local
+        assert!(!es_correo_valido("a b@pymza.mx")); // con espacio
+        assert!(!es_correo_valido("a@b@c.mx")); // más de un @
+    }
+
+    #[test]
+    fn curps_del_seed_son_validas() {
+        for curp in ["RAMJ920215MDFMZR03", "GAML930528HDFLNR05", "GARV850710MCHLRN09"] {
+            assert!(es_curp_valida(curp), "{} debería ser válida", curp);
+        }
+    }
+
+    #[test]
+    fn rechaza_minusculas() {
+        assert!(!es_curp_valida("ramj920215mdfmzr03"));
+    }
+
+    #[test]
+    fn rechaza_longitud_incorrecta() {
+        assert!(!es_curp_valida(""));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR0"));
+        assert!(!es_curp_valida("RAMJ920215MDFMZR030"));
+    }
+
+    #[test]
+    fn rechaza_fecha_invalida() {
+        assert!(!es_curp_valida("RAMJ921315MDFMZR03")); // mes 13
+        assert!(!es_curp_valida("RAMJ920232MDFMZR03")); // día 32
+        assert!(!es_curp_valida("RAMJ92M215MDFMZR03")); // año con letra
+    }
+
+    #[test]
+    fn rechaza_sexo_invalido() {
+        assert!(!es_curp_valida("RAMJ920215XDFMZR03"));
+    }
+
+    #[test]
+    fn rechaza_entidad_invalida() {
+        assert!(!es_curp_valida("RAMJ920215MXXMZR03"));
     }
 
     #[test]
