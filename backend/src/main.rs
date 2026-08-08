@@ -8,6 +8,10 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
 use futures::StreamExt;
@@ -85,14 +89,23 @@ async fn login_empresa(
     let coll = client.database("pymza").collection::<models::empresa::Empresa>("empresas");
 
     match coll.find_one(
-        mongodb::bson::doc! { "correo": payload.correo, "password": payload.password },
+        mongodb::bson::doc! { "correo": &payload.correo },
         None
     ).await {
-        Ok(Some(empresa)) => Json(serde_json::json!({
-            "status": "success",
-            "empresa": empresa.nombre_empresa,
-            "token": "token-temporal-123"
-        })),
+        Ok(Some(empresa)) => {
+            if password_correcta(&payload.password, &empresa.password) {
+                Json(serde_json::json!({
+                    "status": "success",
+                    "empresa": empresa.nombre_empresa,
+                    "token": "token-temporal-123"
+                }))
+            } else {
+                Json(serde_json::json!({
+                    "status": "error",
+                    "message": "Credenciales inválidas"
+                }))
+            }
+        }
         Ok(None) => Json(serde_json::json!({
             "status": "error",
             "message": "Credenciales inválidas"
@@ -118,6 +131,27 @@ fn es_correo_valido(correo: &str) -> bool {
     !local.is_empty() && dominio.contains('.') && tiene_un_solo_arroba
 }
 
+// ponytail: hashing sincrónico (~100ms, argon2id por defecto). Bloquea un worker
+// del runtime async durante la operación; si el QPS de login/registro escala,
+// mover a tokio::task::spawn_blocking.
+fn hashear_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+}
+
+// Solo valida hashes PHC argon2. Sin fallback a texto plano: las bases con
+// passwords en plaintext quedan obsoletas (re-seedar, ver commit T-11).
+fn password_correcta(password: &str, hash_almacenado: &str) -> bool {
+    match PasswordHash::new(hash_almacenado) {
+        Ok(parsed) => Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
 async fn alta_empresa(
     State(client): State<mongodb::Client>,
     Json(payload): Json<models::empresa::Empresa>,
@@ -135,7 +169,7 @@ async fn alta_empresa(
         }));
     }
 
-    let coll = client.database("pymza").collection::<models::empresa::Empresa>("empresas");
+    let coll = client.database("pymza").collection::<mongodb::bson::Document>("empresas");
 
     if let Ok(Some(_)) = coll.find_one(mongodb::bson::doc! { "correo": &payload.correo }, None).await {
         return Json(serde_json::json!({
@@ -144,7 +178,25 @@ async fn alta_empresa(
         }));
     }
 
-    match coll.insert_one(&payload, None).await {
+    let password_hash = match hashear_password(&payload.password) {
+        Ok(hash) => hash,
+        Err(e) => {
+            eprintln!("🚨 ERROR AL HASHEAR PASSWORD: {:?}", e);
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "Error al registrar la empresa"
+            }));
+        }
+    };
+    // ponytail: password tiene #[serde(skip_serializing)] (nunca sale en JSON),
+    // así que el insert se arma con doc! para persistirla igualmente.
+    let empresa_doc = mongodb::bson::doc! {
+        "correo": &payload.correo,
+        "password": password_hash,
+        "nombre_empresa": &payload.nombre_empresa,
+    };
+
+    match coll.insert_one(empresa_doc, None).await {
         Ok(_) => Json(serde_json::json!({
             "status": "success",
             "empresa": {
@@ -482,6 +534,26 @@ mod tests {
         assert!(!es_correo_valido("@pymza.mx")); // sin parte local
         assert!(!es_correo_valido("a b@pymza.mx")); // con espacio
         assert!(!es_correo_valido("a@b@c.mx")); // más de un @
+    }
+
+    #[test]
+    fn hashear_password_produce_hash_argon2id() {
+        let hash = hashear_password("demo123").unwrap();
+        assert!(hash.starts_with("$argon2id$"), "hash PHC argon2id esperado: {}", hash);
+        assert_ne!(hash, "demo123");
+    }
+
+    #[test]
+    fn password_correcta_valida_hash() {
+        let hash = hashear_password("demo123").unwrap();
+        assert!(password_correcta("demo123", &hash));
+        assert!(!password_correcta("otra-password", &hash));
+    }
+
+    #[test]
+    fn password_correcta_rechaza_plaintext_legacy() {
+        // Nota de migración T-11: bases con plaintext quedan obsoletas; re-seedar.
+        assert!(!password_correcta("demo123", "demo123"));
     }
 
     #[test]
