@@ -41,10 +41,10 @@ Not lazy about: input validation at trust boundaries, error handling that preven
 PYMZA/
 ├── backend/          # Axum server
 │   └── src/
-│       ├── main.rs   # ENTRYPOINT: all 7 routes live here (handlers are inline)
+│       ├── main.rs   # ENTRYPOINT: all 9 routes live here (handlers are inline)
 │       ├── db.rs     # MongoDB pool (max 10); hardcodes 127.0.0.1 to avoid IPv6 timeout
 │       └── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
-├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~830 lines), no router
+├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~816 lines), no router
 │   ├── src/
 │   │   └── main.rs   # Entrypoint: Login + Sidebar + MainArea (MenuState enum, conditional render)
 │   ├── tailwind.css  # Tailwind input (tracked, 1 line). `dx serve` auto-compiles → assets/tailwind.css
