@@ -12,7 +12,7 @@ use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
 use futures::StreamExt;
 use models::credito::{EvaluarReq, AutorizarReq, PlanPago, EvaluarRes, PagoInfo, DashboardStats};
-use models::cliente::{Cliente, CrearClienteReq};
+use models::cliente::{Cliente, CrearClienteReq, ReportarReq, AlertaMorosidad};
 
 #[derive(Deserialize, Serialize)]
 struct LoginPayload {
@@ -61,6 +61,7 @@ async fn main() {
         .route("/api/empresas", post(alta_empresa))
         .route("/api/clientes", post(crear_cliente))
         .route("/api/clientes/:curp", get(buscar_cliente))
+        .route("/api/clientes/:curp/reportar", post(reportar_cliente))
         .route("/api/creditos/evaluar", post(evaluar_credito))
         .route("/api/creditos/autorizar", post(autorizar_credito))
         .route("/api/creditos/:empresa", get(obtener_creditos))
@@ -211,6 +212,7 @@ async fn crear_cliente(
         historial_pagos: "Sin historial en la red".to_string(),
         direccion: payload.direccion,
         telefono: payload.telefono,
+        alerta: None,
     };
 
     match coll.insert_one(&cliente, None).await {
@@ -218,6 +220,46 @@ async fn crear_cliente(
         Err(e) => {
             eprintln!("🚨 ERROR MONGODB: {:?}", e);
             Json(serde_json::json!({ "status": "error", "message": "Error al guardar el cliente" }))
+        }
+    }
+}
+
+async fn reportar_cliente(
+    State(client): State<mongodb::Client>,
+    axum::extract::Path(curp): axum::extract::Path<String>,
+    Json(payload): Json<ReportarReq>,
+) -> Json<serde_json::Value> {
+    if payload.empresa.trim().is_empty() || payload.motivo.trim().is_empty() {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": "Empresa y motivo son obligatorios"
+        }));
+    }
+
+    let coll = client.database("pymza").collection::<Cliente>("clientes");
+    let alerta = AlertaMorosidad {
+        empresa: payload.empresa,
+        motivo: payload.motivo,
+    };
+    // ponytail: un cliente con reporte previo se sobrescribe con el último;
+    // el techo es un único flag por cliente. Multi-reportes (historial de
+    // alertas) requerirían un array `alertas` en el documento.
+    let update = mongodb::bson::doc! {
+        "$set": { "alerta": { "empresa": &alerta.empresa, "motivo": &alerta.motivo } }
+    };
+
+    match coll.update_one(mongodb::bson::doc! { "curp": &curp }, update, None).await {
+        Ok(res) if res.matched_count == 1 => Json(serde_json::json!({
+            "status": "success",
+            "alerta": alerta
+        })),
+        Ok(_) => Json(serde_json::json!({
+            "status": "not_found",
+            "message": "Cliente no existe en la red PYMZA"
+        })),
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            Json(serde_json::json!({ "status": "error" }))
         }
     }
 }
@@ -515,5 +557,36 @@ mod tests {
         let plan = generar_plan_pagos(12000.0, 3, 0.03);
         let suma_capital: f64 = plan.iter().map(|p| p.capital).sum();
         assert_eq!(suma_capital, 12000.0);
+    }
+
+    #[test]
+    fn deserializa_documento_seed_sin_alerta() {
+        let json = r#"{"curp":"RAMJ920215MDFMZR03","nombre_completo":"Janeth Ramos Zamora","score":720,"nivel_riesgo":"Bajo","historial_pagos":"Puntual en 2 empresas de la red","direccion":"Av. Juárez 123, Centro","telefono":"5551234567"}"#;
+        let cliente: Cliente = serde_json::from_str(json).expect("seed sin alerta debe deserializar");
+        assert!(cliente.alerta.is_none());
+    }
+
+    #[test]
+    fn cliente_sin_alerta_responde_igual_que_hoy() {
+        let json = r#"{"curp":"RAMJ920215MDFMZR03","nombre_completo":"Janeth Ramos Zamora","score":720,"nivel_riesgo":"Bajo","historial_pagos":"Puntual en 2 empresas de la red","direccion":"Av. Juárez 123, Centro","telefono":"5551234567"}"#;
+        let cliente: Cliente = serde_json::from_str(json).unwrap();
+        assert!(!serde_json::to_string(&cliente).unwrap().contains("alerta"));
+    }
+
+    #[test]
+    fn cliente_con_alerta_serializa_y_roundtripea() {
+        let mut cliente: Cliente = serde_json::from_str(
+            r#"{"curp":"RAMJ920215MDFMZR03","nombre_completo":"Janeth Ramos Zamora","score":720,"nivel_riesgo":"Bajo","historial_pagos":"Puntual en 2 empresas de la red","direccion":"Av. Juárez 123, Centro","telefono":"5551234567"}"#,
+        ).unwrap();
+        cliente.alerta = Some(AlertaMorosidad {
+            empresa: "Ferretería El Tornillo".to_string(),
+            motivo: "Desapareció con deuda pendiente".to_string(),
+        });
+
+        let json = serde_json::to_string(&cliente).unwrap();
+        let de_vuelta: Cliente = serde_json::from_str(&json).unwrap();
+        let alerta = de_vuelta.alerta.expect("alerta debe sobrevivir al roundtrip");
+        assert_eq!(alerta.empresa, "Ferretería El Tornillo");
+        assert_eq!(alerta.motivo, "Desapareció con deuda pendiente");
     }
 }
