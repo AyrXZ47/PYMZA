@@ -1,0 +1,33 @@
+# Frontend PYMZA (Dioxus 0.7 → WASM). Build multi-stage: dx → dist → nginx estático en :8080.
+# Contexto de build: raíz del repo. Uso: docker build -f Dockerfile.frontend .
+FROM rust:1.83-bookworm AS dx
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    # dx 0.7.9 auto-descarga tailwindcss v4, wasm-bindgen y wasm-opt a ~/.dx (ver src/tailwind.rs)
+    && rustup target add wasm32-unknown-unknown \
+    && cargo install dioxus-cli --version 0.7.9 --locked
+
+FROM dx AS wasm
+WORKDIR /app
+COPY frontend/Cargo.toml frontend/Dioxus.toml frontend/tailwind.css ./
+COPY frontend/src ./src
+COPY frontend/assets ./assets
+# Compila WASM + assets (tailwind.css ya está commiteado como fallback).
+# --debug-symbols=false: sin DWARF el wasm-opt 129 no crashea (SIGABRT por DWARF5).
+RUN dx build --release --debug-symbols=false
+
+FROM nginx:1.27-alpine AS runtime
+# Salida de dx 0.7.9 (web): target/dx/frontend/release/web/public (no dist/).
+COPY --from=wasm /app/target/dx/frontend/release/web/public /usr/share/nginx/html
+RUN printf '%s\n' \
+    'server {' \
+    '    listen 8080;' \
+    '    server_name _;' \
+    '    root /usr/share/nginx/html;' \
+    '    index index.html;' \
+    '    location / { try_files $uri $uri/ /index.html; }' \
+    '}' \
+    > /etc/nginx/conf.d/default.conf
+EXPOSE 8080

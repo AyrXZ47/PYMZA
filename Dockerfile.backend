@@ -1,0 +1,28 @@
+# Backend PYMZA (Axum + MongoDB). Build multi-stage: rust → debian slim.
+# Contexto de build: raíz del repo. Uso: docker build -f Dockerfile.backend .
+FROM rust:1.83-bookworm AS builder
+
+# El driver MongoDB compila con la feature openssl-tls: requiere libs dev de OpenSSL.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY backend/Cargo.toml backend/Cargo.toml
+COPY backend/src backend/src
+# Cargo.lock está gitignored en el repo (ver .gitignore): se genera aquí para un build reproducible.
+RUN cargo build --release
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home app
+WORKDIR /app
+COPY --from=builder /build/target/release/pymza_backend /app/pymza_backend
+USER app
+EXPOSE 3000
+# MONGODB_URI y BIND_ADDR los inyecta docker-compose; BIND_ADDR default por si se
+# corre con `docker run` directo (el binario por defecto liga 127.0.0.1:3000).
+ENV BIND_ADDR=0.0.0.0:3000
+CMD ["/app/pymza_backend"]
