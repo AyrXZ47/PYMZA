@@ -41,10 +41,10 @@ Not lazy about: input validation at trust boundaries, error handling that preven
 PYMZA/
 ├── backend/          # Axum server
 │   └── src/
-│       ├── main.rs   # ENTRYPOINT: all 9 routes live here (handlers are inline)
+│       ├── main.rs   # ENTRYPOINT: all 10 routes live here (handlers are inline)
 │       ├── db.rs     # MongoDB pool (max 10); hardcodes 127.0.0.1 to avoid IPv6 timeout
 │       └── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
-├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~816 lines), no router
+├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~877 lines), no router
 │   ├── src/
 │   │   └── main.rs   # Entrypoint: Login + Sidebar + MainArea (MenuState enum, conditional render)
 │   ├── tailwind.css  # Tailwind input (tracked, 1 line). `dx serve` auto-compiles → assets/tailwind.css
@@ -88,7 +88,7 @@ cd frontend && ./tailwind.sh        # o: ./tailwind.sh --watch durante desarroll
 - **No router:** app uses a `MenuState` enum + conditional rendering. The `router` feature is enabled in `frontend/Cargo.toml` but unused.
 - **`frontend/tailwind.css`** (tracked) is the Tailwind input; the compiled `assets/tailwind.css` is gitignored/generated.
 - **No tests, no CI.** Only lint config is `frontend/clippy.toml`. `cargo test`/`dx check` are the only verification available.
-- **Login has no security** — password compared in plaintext against the `empresas` collection; token is static `"token-temporal-123"`.
+- **Login** — password hashed with argon2id (PHC) in `empresas`; token is still static `"token-temporal-123"` (no JWT, routes don't validate it).
 
 ## API Endpoints (backend)
 
@@ -100,6 +100,7 @@ Collections: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
 | POST | `/api/empresas` | Alta de empresa nueva (valida correo y contraseña, evita duplicados) |
 | GET | `/api/clientes/:curp` | Lookup client by CURP in PYMZA network |
 | POST | `/api/clientes` | Alta de cliente nuevo (valida CURP, evita duplicados; score base 550) |
+| POST | `/api/clientes/:curp/reportar` | Alerta temprana: marca al cliente como moroso/desaparecido con motivo (red colaborativa) |
 | POST | `/api/ocr` | OCR validation (placeholder, fixed JSON) |
 | POST | `/api/creditos/evaluar` | Evaluate credit: rate by plazo (3m=3% … 12m=15%), approve/reject by score, build payment plan |
 | POST | `/api/creditos/autorizar` | Insert `planes_pago` + upsert `dashboard_stats` |

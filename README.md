@@ -18,7 +18,12 @@ Frontend (Dioxus WASM) ──HTTP/JSON──> Backend (Axum/Tokio) ──> Mongo
 ```
 
 - **Frontend**: SPA en WebAssembly con Sidebar + MainArea (Dashboard, Alta de Cliente, Cartera) + modal de 3 pasos para planes de pago. Todo el app vive en `frontend/src/main.rs`.
-- **Backend**: 9 endpoints REST (login, alta de empresas, alta/búsqueda de clientes, evaluación y autorización de créditos, cartera y dashboard) + pool de conexión a MongoDB.
+- **Backend**: 10 endpoints REST (login, alta de empresas, alta/búsqueda de clientes, reporte de morosidad, evaluación y autorización de créditos, cartera y dashboard) + pool de conexión a MongoDB.
+
+## Documentación
+
+- [`docs/API.md`](docs/API.md) — referencia completa de los 10 endpoints (payloads y respuestas).
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — checklist de visión de PYMZA.md consolidado con el estado real del código.
 
 ## Cómo Empezar
 
