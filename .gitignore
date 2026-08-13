@@ -62,3 +62,28 @@ fp-info-cache
 
 .aider*
 backend/target/
+
+# --- Agentes IA: memorias y estado local (NUNCA al repo) ---
+.serena/
+.engram/
+.opencode/
+.aider/
+.aider*
+
+# --- Secretos y credenciales ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.crt
+*.keystore
+id_rsa
+id_ed25519
+id_ecdsa
+credentials
+secrets/
+*.secret
