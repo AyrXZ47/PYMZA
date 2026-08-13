@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use reqwest::StatusCode;
 use std::sync::OnceLock;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
@@ -7,6 +8,25 @@ const API_BASE: &str = "http://127.0.0.1:3000";
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| reqwest::Client::new())
+}
+
+// ponytail: el token vive en una señal en memoria (se pierde al recargar la
+// página). Techo conocido: sin persistencia entre recargas; el día que el
+// backend emita tokens reales, subir a localStorage/sessionStorage con
+// httpOnly desde el servidor o refresh tokens.
+fn authed_request(method: reqwest::Method, path: String, token: &str) -> reqwest::RequestBuilder {
+    http_client()
+        .request(method, format!("{API_BASE}{path}"))
+        .bearer_auth(token)
+}
+
+fn sesion_ok(res: &reqwest::Response, mut is_authenticated: Signal<bool>, mut token: Signal<String>) -> bool {
+    if res.status() == StatusCode::UNAUTHORIZED {
+        is_authenticated.set(false);
+        token.set(String::new());
+        return false;
+    }
+    true
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -49,26 +69,36 @@ fn App() -> Element {
     let is_authenticated = use_signal(|| false);
     let current_company = use_signal(|| String::new());
     let active_menu = use_signal(|| MenuState::Dashboard);
+    let token = use_signal(|| String::new());
 
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
         if is_authenticated() {
             div {
                 class: "flex h-screen text-white",
-                Sidebar { current_company, active_menu, is_authenticated }
-                MainArea { current_company, active_menu }
+                Sidebar { current_company, active_menu, is_authenticated, token }
+                MainArea { current_company, active_menu, is_authenticated, token }
             }
         } else {
-            Login { is_authenticated, current_company }
+            Login { is_authenticated, current_company, token }
         }
     }
 }
 
 #[component]
-fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) -> Element {
+fn Login(
+    is_authenticated: Signal<bool>,
+    mut current_company: Signal<String>,
+    mut token: Signal<String>,
+) -> Element {
     let mut correo = use_signal(|| String::new());
     let mut password = use_signal(|| String::new());
     let mut error_msg = use_signal(|| None::<String>);
+    let mut reg_nombre = use_signal(|| String::new());
+    let mut reg_correo = use_signal(|| String::new());
+    let mut reg_password = use_signal(|| String::new());
+    let mut reg_error = use_signal(|| None::<String>);
+    let mut reg_ok = use_signal(|| false);
 
     rsx! {
         div {
@@ -111,6 +141,7 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                                                 Ok(data) => {
                                                     if data["status"] == "success" {
                                                         current_company.set(data["empresa"].as_str().unwrap_or("").to_string());
+                                                        token.set(data["token"].as_str().unwrap_or("").to_string());
                                                         is_authenticated.set(true);
                                                     } else {
                                                         error_msg.set(Some("Credenciales inválidas".to_string()));
@@ -149,6 +180,7 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                                             Ok(data) => {
                                                 if data["status"] == "success" {
                                                     current_company.set(data["empresa"].as_str().unwrap_or("").to_string());
+                                                    token.set(data["token"].as_str().unwrap_or("").to_string());
                                                     is_authenticated.set(true);
                                                 } else {
                                                     error_msg.set(Some("Credenciales inválidas".to_string()));
@@ -174,6 +206,86 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
                         }
                     }
                 }
+                div {
+                    class: "mt-8 pt-6 border-t border-slate-700",
+                    div {
+                        class: "flex flex-col items-center mb-6",
+                        div { class: "text-white font-bold text-lg", "Registrar Empresa" }
+                        div { class: "text-slate-400 text-sm text-center", "Únete a la red PYMZA y otorga crédito con cobranza respaldada" }
+                    }
+                    div { class: "flex flex-col gap-3",
+                        input {
+                            class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
+                            placeholder: "Nombre de la Empresa",
+                            value: reg_nombre(),
+                            oninput: move |e| reg_nombre.set(e.value()),
+                        }
+                        input {
+                            class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
+                            placeholder: "Correo de la Empresa",
+                            value: reg_correo(),
+                            oninput: move |e| reg_correo.set(e.value()),
+                        }
+                        input {
+                            class: "bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-400 rounded-lg px-4 py-3 outline-none focus:border-blue-500 transition-colors",
+                            placeholder: "Contraseña (mínimo 8 caracteres)",
+                            type: "password",
+                            value: reg_password(),
+                            oninput: move |e| reg_password.set(e.value()),
+                        }
+                        button {
+                            class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold rounded-lg px-4 py-3 transition-colors",
+                            onclick: move |_| {
+                                let nombre = reg_nombre();
+                                let correo_reg = reg_correo();
+                                let password_reg = reg_password();
+                                let prefill_correo = correo_reg.clone();
+                                reg_error.set(None);
+                                reg_ok.set(false);
+                                spawn(async move {
+                                    let body = serde_json::json!({
+                                        "correo": correo_reg,
+                                        "password": password_reg,
+                                        "nombre_empresa": nombre,
+                                    });
+                                    match http_client().post(format!("{API_BASE}/api/empresas"))
+                                        .json(&body)
+                                        .send()
+                                        .await
+                                    {
+                                        Ok(res) => {
+                                            match res.json::<serde_json::Value>().await {
+                                                Ok(data) => {
+                                                    if data["status"] == "success" {
+                                                        reg_ok.set(true);
+                                                        correo.set(prefill_correo);
+                                                        reg_nombre.set(String::new());
+                                                        reg_password.set(String::new());
+                                                    } else {
+                                                        reg_error.set(Some(data["message"].as_str().unwrap_or("Error al registrar la empresa").to_string()));
+                                                    }
+                                                }
+                                                Err(_) => {
+                                                    reg_error.set(Some("Error al procesar la respuesta".to_string()));
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            reg_error.set(Some("Error de conexión con el servidor".to_string()));
+                                        }
+                                    }
+                                });
+                            },
+                            "Registrar Empresa"
+                        }
+                        if reg_ok() {
+                            p { class: "text-green-500 text-sm text-center", "Empresa registrada correctamente. Ya puedes iniciar sesión." }
+                        }
+                        if let Some(msg) = reg_error() {
+                            p { class: "text-red-500 text-sm text-center", "{msg}" }
+                        }
+                    }
+                }
             }
         }
     }
@@ -181,7 +293,21 @@ fn Login(is_authenticated: Signal<bool>, mut current_company: Signal<String>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::alerta_info;
+    use super::{alerta_info, authed_request};
+
+    #[test]
+    fn authed_request_incluye_header_authorization_bearer() {
+        let request = authed_request(reqwest::Method::GET, "/api/dashboard/x".to_string(), "token-temporal-123")
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer token-temporal-123")
+        );
+    }
 
     #[test]
     fn alerta_info_con_alerta_devuelve_motivo_y_empresa() {
@@ -209,7 +335,7 @@ mod tests {
 }
 
 #[component]
-fn Sidebar(mut current_company: Signal<String>, mut active_menu: Signal<MenuState>, mut is_authenticated: Signal<bool>) -> Element {
+fn Sidebar(mut current_company: Signal<String>, mut active_menu: Signal<MenuState>, mut is_authenticated: Signal<bool>, mut token: Signal<String>) -> Element {
     rsx! {
         div {
             class: "bg-slate-900 w-64 flex flex-col items-center justify-start p-4",
@@ -253,6 +379,7 @@ fn Sidebar(mut current_company: Signal<String>, mut active_menu: Signal<MenuStat
                     is_authenticated.set(false);
                     current_company.set(String::new());
                     active_menu.set(MenuState::Dashboard);
+                    token.set(String::new());
                 },
                 svg { class: "w-5 h-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
                     path { d: "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" }
@@ -264,7 +391,12 @@ fn Sidebar(mut current_company: Signal<String>, mut active_menu: Signal<MenuStat
 }
 
 #[component]
-fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> Element {
+fn MainArea(
+    current_company: Signal<String>,
+    active_menu: Signal<MenuState>,
+    is_authenticated: Signal<bool>,
+    token: Signal<String>,
+) -> Element {
     let mut curp_input = use_signal(|| String::new());
     let mut search_result = use_signal(|| None::<serde_json::Value>);
     let mut search_status = use_signal(|| String::new());
@@ -294,25 +426,27 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     // Fetch dashboard stats when empresa changes or after authorization
     if !stats_loaded() && !current_company().is_empty() {
         let empresa = current_company();
+        let token_val = token();
         stats_loaded.set(true);
         spawn(async move {
-            match http_client()
-                .get(&format!("{API_BASE}/api/dashboard/{}", empresa))
+            match authed_request(reqwest::Method::GET, format!("/api/dashboard/{empresa}"), &token_val)
                 .send()
                 .await
             {
                 Ok(res) => {
-                    if let Ok(data) = res.json::<serde_json::Value>().await {
-                        if data["status"] == "success" {
-                            if let Some(s) = data.get("stats") {
-                                let e = s["empresa"].as_str().unwrap_or("").to_string();
-                                let ca = s["creditos_activos"].as_i64().unwrap_or(0) as i32;
-                                let cp = s["capital_prestado"].as_f64().unwrap_or(0.0);
-                                let pc = s["proximos_cobros"].as_i64().unwrap_or(0) as i32;
-                                dashboard_stats.set(DashboardStats {
-                                    empresa: e, creditos_activos: ca,
-                                    capital_prestado: cp, proximos_cobros: pc,
-                                });
+                    if sesion_ok(&res, is_authenticated, token) {
+                        if let Ok(data) = res.json::<serde_json::Value>().await {
+                            if data["status"] == "success" {
+                                if let Some(s) = data.get("stats") {
+                                    let e = s["empresa"].as_str().unwrap_or("").to_string();
+                                    let ca = s["creditos_activos"].as_i64().unwrap_or(0) as i32;
+                                    let cp = s["capital_prestado"].as_f64().unwrap_or(0.0);
+                                    let pc = s["proximos_cobros"].as_i64().unwrap_or(0) as i32;
+                                    dashboard_stats.set(DashboardStats {
+                                        empresa: e, creditos_activos: ca,
+                                        capital_prestado: cp, proximos_cobros: pc,
+                                    });
+                                }
                             }
                         }
                     }
@@ -325,18 +459,20 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
     // Fetch cartera (planes activos) cuando cambia la empresa
     if !cartera_loaded() && !current_company().is_empty() {
         let empresa = current_company();
+        let token_val = token();
         cartera_loaded.set(true);
         spawn(async move {
-            match http_client()
-                .get(&format!("{API_BASE}/api/creditos/{}", empresa))
+            match authed_request(reqwest::Method::GET, format!("/api/creditos/{empresa}"), &token_val)
                 .send()
                 .await
             {
                 Ok(res) => {
-                    if let Ok(data) = res.json::<serde_json::Value>().await {
-                        if data["status"] == "success" {
-                            if let Some(arr) = data["creditos"].as_array() {
-                                cartera_planes.set(arr.clone());
+                    if sesion_ok(&res, is_authenticated, token) {
+                        if let Ok(data) = res.json::<serde_json::Value>().await {
+                            if data["status"] == "success" {
+                                if let Some(arr) = data["creditos"].as_array() {
+                                    cartera_planes.set(arr.clone());
+                                }
                             }
                         }
                     }
@@ -419,17 +555,18 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                     class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors whitespace-nowrap",
                                     onclick: move |_| {
                                         let curp = curp_input();
+                                        let token_val = token();
                                         search_result.set(None);
                                         search_status.set(String::new());
                                         show_plan_modal.set(false);
                                         spawn(async move {
-                                            match http_client()
-                                                .get(&format!("{API_BASE}/api/clientes/{}", curp))
+                                            match authed_request(reqwest::Method::GET, format!("/api/clientes/{curp}"), &token_val)
                                                 .send()
                                                 .await
                                             {
                                                 Ok(res) => {
-                                                    match res.json::<serde_json::Value>().await {
+                                                    if sesion_ok(&res, is_authenticated, token) {
+                                                        match res.json::<serde_json::Value>().await {
                                                         Ok(data) => {
                                                             if data["status"] == "success" {
                                                                 if let Some(cliente) = data.get("cliente") {
@@ -445,6 +582,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                             search_status.set("Error al procesar respuesta".to_string());
                                                         }
                                                     }
+                                                }
                                                 }
                                                 Err(_) => {
                                                     search_status.set("Error de conexión con el servidor".to_string());
@@ -526,6 +664,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                     let nombre = alta_nombre();
                                                     let direccion = alta_direccion();
                                                     let telefono = alta_telefono();
+                                                    let token_val = token();
                                                     spawn(async move {
                                                         let body = serde_json::json!({
                                                             "curp": curp,
@@ -533,28 +672,30 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                             "direccion": direccion,
                                                             "telefono": telefono,
                                                         });
-                                                        match http_client().post(format!("{API_BASE}/api/clientes"))
+                                                        match authed_request(reqwest::Method::POST, "/api/clientes".to_string(), &token_val)
                                                             .json(&body)
                                                             .send()
                                                             .await
                                                         {
                                                             Ok(res) => {
-                                                                match res.json::<serde_json::Value>().await {
-                                                                    Ok(data) => {
-                                                                        if data["status"] == "success" {
-                                                                            if let Some(cliente) = data.get("cliente") {
-                                                                                search_result.set(Some(cliente.clone()));
-                                                                                alta_nombre.set(String::new());
-                                                                                alta_direccion.set(String::new());
-                                                                                alta_telefono.set(String::new());
-                                                                                search_status.set(String::new());
+                                                                if sesion_ok(&res, is_authenticated, token) {
+                                                                    match res.json::<serde_json::Value>().await {
+                                                                        Ok(data) => {
+                                                                            if data["status"] == "success" {
+                                                                                if let Some(cliente) = data.get("cliente") {
+                                                                                    search_result.set(Some(cliente.clone()));
+                                                                                    alta_nombre.set(String::new());
+                                                                                    alta_direccion.set(String::new());
+                                                                                    alta_telefono.set(String::new());
+                                                                                    search_status.set(String::new());
+                                                                                }
+                                                                            } else {
+                                                                                search_status.set(data["message"].as_str().unwrap_or("Error al registrar").to_string());
                                                                             }
-                                                                        } else {
-                                                                            search_status.set(data["message"].as_str().unwrap_or("Error al registrar").to_string());
                                                                         }
-                                                                    }
-                                                                    Err(_) => {
-                                                                        search_status.set("Error al procesar respuesta".to_string());
+                                                                        Err(_) => {
+                                                                            search_status.set("Error al procesar respuesta".to_string());
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -621,6 +762,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                             let curp = curp_input();
                                                             let monto_str = plan_monto();
                                                             let plazo = plan_plazo();
+                                                            let token_val = token();
                                                             modal_step.set(1);
                                                             spawn(async move {
                                                                 let monto_num: f64 = monto_str.parse().unwrap_or(0.0);
@@ -630,32 +772,34 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                     "monto": monto_num,
                                                                     "plazo_meses": plazo_num,
                                                                 });
-                                                                match http_client().post(format!("{API_BASE}/api/creditos/evaluar"))
+                                                                match authed_request(reqwest::Method::POST, "/api/creditos/evaluar".to_string(), &token_val)
                                                                     .json(&body)
                                                                     .send()
                                                                     .await
                                                                 {
                                                                     Ok(res) => {
-                                                                        match res.json::<serde_json::Value>().await {
-                                                                            Ok(data) => {
-                                                                                eval_estado.set(data["estado"].as_str().unwrap_or("").to_string());
-                                                                                eval_pago_mensual.set(data["pago_mensual"].as_f64().unwrap_or(0.0));
-                                                                                eval_tasa_interes.set(data["tasa_interes"].as_f64().unwrap_or(0.0));
-                                                                                consideraciones.set(data["consideraciones"].as_str().unwrap_or("").to_string());
-                                                                                if let Some(plan) = data["plan_pagos"].as_array() {
-                                                                                    let planes: Vec<PagoInfo> = plan.iter().map(|p| PagoInfo {
-                                                                                        mes: p["mes"].as_i64().unwrap_or(0) as i32,
-                                                                                        pago: p["pago"].as_f64().unwrap_or(0.0),
-                                                                                        interes: p["interes"].as_f64().unwrap_or(0.0),
-                                                                                        capital: p["capital"].as_f64().unwrap_or(0.0),
-                                                                                        saldo_restante: p["saldo_restante"].as_f64().unwrap_or(0.0),
-                                                                                    }).collect();
-                                                                                    eval_plan_pagos.set(planes);
+                                                                        if sesion_ok(&res, is_authenticated, token) {
+                                                                            match res.json::<serde_json::Value>().await {
+                                                                                Ok(data) => {
+                                                                                    eval_estado.set(data["estado"].as_str().unwrap_or("").to_string());
+                                                                                    eval_pago_mensual.set(data["pago_mensual"].as_f64().unwrap_or(0.0));
+                                                                                    eval_tasa_interes.set(data["tasa_interes"].as_f64().unwrap_or(0.0));
+                                                                                    consideraciones.set(data["consideraciones"].as_str().unwrap_or("").to_string());
+                                                                                    if let Some(plan) = data["plan_pagos"].as_array() {
+                                                                                        let planes: Vec<PagoInfo> = plan.iter().map(|p| PagoInfo {
+                                                                                            mes: p["mes"].as_i64().unwrap_or(0) as i32,
+                                                                                            pago: p["pago"].as_f64().unwrap_or(0.0),
+                                                                                            interes: p["interes"].as_f64().unwrap_or(0.0),
+                                                                                            capital: p["capital"].as_f64().unwrap_or(0.0),
+                                                                                            saldo_restante: p["saldo_restante"].as_f64().unwrap_or(0.0),
+                                                                                        }).collect();
+                                                                                        eval_plan_pagos.set(planes);
+                                                                                    }
                                                                                 }
-                                                                            }
-                                                                            Err(_) => {
-                                                                                eval_estado.set("Error".to_string());
-                                                                                consideraciones.set("Error al procesar la evaluación".to_string());
+                                                                                Err(_) => {
+                                                                                    eval_estado.set("Error".to_string());
+                                                                                    consideraciones.set("Error al procesar la evaluación".to_string());
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
@@ -759,6 +903,7 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                             let plazo = plan_plazo();
                                                             let pago_mensual = eval_pago_mensual();
                                                             let tasa = eval_tasa_interes();
+                                                            let token_val = token();
                                                             let _plan_pagos_snapshot = eval_plan_pagos();
                                                             spawn(async move {
                                                                 let monto_num: f64 = monto_total.parse().unwrap_or(0.0);
@@ -772,37 +917,40 @@ fn MainArea(current_company: Signal<String>, active_menu: Signal<MenuState>) -> 
                                                                     "pago_mensual": pago_mensual,
                                                                     "tasa_interes": tasa,
                                                                 });
-                                                                if let Ok(res) = http_client().post(format!("{API_BASE}/api/creditos/autorizar"))
+                                                                if let Ok(res) = authed_request(reqwest::Method::POST, "/api/creditos/autorizar".to_string(), &token_val)
                                                                     .json(&body)
                                                                     .send()
                                                                     .await
                                                                 {
-                                                                    if let Ok(data) = res.json::<serde_json::Value>().await {
-                                                                        if data["status"] == "success" {
-                                                                            // Update local dashboard stats
-                                                                            show_plan_modal.set(false);
-                                                                            modal_step.set(0);
-                                                                            cartera_loaded.set(false);
-                                                                            plan_producto.set(String::new());
-                                                                            plan_monto.set(String::new());
-                                                                            plan_plazo.set("3".to_string());
-                                                                            terms_accepted.set(false);
-                                                                            // Refresh dashboard
-                                                                            if let Ok(stats_res) = http_client()
-                                                                                .get(&format!("{API_BASE}/api/dashboard/{}", empresa))
-                                                                                .send()
-                                                                                .await
-                                                                            {
-                                                                                if let Ok(stats_data) = stats_res.json::<serde_json::Value>().await {
-                                                                                    if let Some(s) = stats_data.get("stats") {
-                                                                                        let e = s["empresa"].as_str().unwrap_or("").to_string();
-                                                                                        let ca = s["creditos_activos"].as_i64().unwrap_or(0) as i32;
-                                                                                        let cp = s["capital_prestado"].as_f64().unwrap_or(0.0);
-                                                                                        let pc = s["proximos_cobros"].as_i64().unwrap_or(0) as i32;
-                                                                                        dashboard_stats.set(DashboardStats {
-                                                                                            empresa: e, creditos_activos: ca,
-                                                                                            capital_prestado: cp, proximos_cobros: pc,
-                                                                                        });
+                                                                    if sesion_ok(&res, is_authenticated, token) {
+                                                                        if let Ok(data) = res.json::<serde_json::Value>().await {
+                                                                            if data["status"] == "success" {
+                                                                                // Update local dashboard stats
+                                                                                show_plan_modal.set(false);
+                                                                                modal_step.set(0);
+                                                                                cartera_loaded.set(false);
+                                                                                plan_producto.set(String::new());
+                                                                                plan_monto.set(String::new());
+                                                                                plan_plazo.set("3".to_string());
+                                                                                terms_accepted.set(false);
+                                                                                // Refresh dashboard
+                                                                                if let Ok(stats_res) = authed_request(reqwest::Method::GET, format!("/api/dashboard/{empresa}"), &token_val)
+                                                                                    .send()
+                                                                                    .await
+                                                                                {
+                                                                                    if sesion_ok(&stats_res, is_authenticated, token) {
+                                                                                        if let Ok(stats_data) = stats_res.json::<serde_json::Value>().await {
+                                                                                            if let Some(s) = stats_data.get("stats") {
+                                                                                                let e = s["empresa"].as_str().unwrap_or("").to_string();
+                                                                                                let ca = s["creditos_activos"].as_i64().unwrap_or(0) as i32;
+                                                                                                let cp = s["capital_prestado"].as_f64().unwrap_or(0.0);
+                                                                                                let pc = s["proximos_cobros"].as_i64().unwrap_or(0) as i32;
+                                                                                                dashboard_stats.set(DashboardStats {
+                                                                                                    empresa: e, creditos_activos: ca,
+                                                                                                    capital_prestado: cp, proximos_cobros: pc,
+                                                                                                });
+                                                                                            }
+                                                                                        }
                                                                                     }
                                                                                 }
                                                                             }
