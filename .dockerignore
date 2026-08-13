@@ -1,0 +1,16 @@
+# Contexto de build = raíz del repo (compartido por Dockerfile.backend y Dockerfile.frontend).
+# Solo se envían al daemon backend/, frontend/, Dockerfile.* y docker-compose.yml.
+.git
+**/target
+**/.env
+.env.example
+**/.env.example
+docs
+*.md
+LICENSE*
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+CONVENTIONS.md
+PYMZA.md
+.opencode
+.serena

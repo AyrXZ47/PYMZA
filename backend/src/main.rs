@@ -74,7 +74,12 @@ async fn main() {
         .layer(cors_layer())
         .with_state(db_client);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    // En Docker el contenedor debe escuchar en 0.0.0.0:3000 (compose lo pasa por env);
+    // por defecto se conserva el bind local actual.
+    let addr: SocketAddr = std::env::var("BIND_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:3000".to_string())
+        .parse()
+        .expect("BIND_ADDR inválida; se espera IP:PUERTO");
     println!("Servidor PYMZA escuchando en {}", addr);
     axum::Server::bind(&addr).serve(app.into_make_service()).await.unwrap();
 }
