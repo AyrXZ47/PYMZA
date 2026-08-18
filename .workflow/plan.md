@@ -161,3 +161,7 @@ además verifica (evidencia = salida de comandos):
 | 2026-08-13 | Contrato API fijado en el plan; executors codifican contra él | Permite backend y frontend en paralelo en la misma ola; la integración verifica el match |
 | 2026-08-13 | App de cobradores y Tauri fuera de este plan | Son productos separados; dependen de que la red de crédito esté viva/desplegada |
 | 2026-08-13 | `docs/ROADMAP.md` está desactualizado (dice ramas sin merge que ya se mergearon) | Se refresca durante la planificación de la ola 2, no bloquea la ola 1 |
+| 2026-08-13 | Atención al hecho de que la alta de empresas SÍ existe en el frontend (form embebido al fondo del Login, `frontend/src/main.rs` ~L209, merged `69e0ad1`) pero sin CTA visible que invite | El usuario la reportó como inexistente por UX; la ola 1 conserva el comportamiento fiel al split; la ola 2 (portal) la convierte en flujo promovido con landing |
+| 2026-08-13 | Trabajar directamente contra MongoDB Atlas (solo datos de prueba hasta ahora); el seed demo queda disponible | Aprobado por el usuario; simplifica los humos de integración |
+| 2026-08-13 | OTP por WhatsApp: proveedor objetivo = WhatsApp Cloud API (Meta); n8n se descarta para OTP y se reserva para automatización de cobranza (ola 6+) | Para un código de 6 dígitos, una llamada directa del backend al proveedor es lo mínimo que funciona; n8n añade orquestación que no se necesita en el flujo de alta |
+| 2026-08-13 | Stripe y Círculo de Crédito: el usuario creará cuentas cuando la ola las pida (5 y 6) | Confirmado por el usuario, presupuesto disponible |
