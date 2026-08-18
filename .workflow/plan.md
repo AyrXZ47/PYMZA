@@ -38,7 +38,7 @@ Constraints:
 
 | Ola | Foco | Estado |
 |-----|------|--------|
-| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] planificada (EN CURSO) |
+| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] integrada* (merges + build/tests OK; **humo bloqueado**: `backend/.env` JWT_SECRET duplicado — ver decision log 2026-08-17) |
 | 2 | Portal público: landing que venda el producto, registro/login separados, sesión persistente pulida, modo claro/oscuro, `API_BASE` configurable | [ ] |
 | 3 | Confianza de identidad: validación CURP/correo/teléfono, KYC/OCR real (subida de archivos), score alternativo por recibos de servicios, contrato PDF | [ ] |
 | 4 | Producción: despliegue Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
@@ -99,8 +99,8 @@ Fuera de ambos (nadie toca): `frontend/tailwind.css`, `frontend/tailwind.sh`,
 
 ### Tareas
 
-- [ ] T1 (executor-1): auth JWT real + aislamiento por tenant en el backend → brief: `.workflow/briefs/wave1-executor-1.md`
-- [ ] T2 (executor-2): partir el monolito frontend en módulos + adaptar al contrato API + sesión en localStorage → brief: `.workflow/briefs/wave1-executor-2.md`
+- [x] T1 (executor-1): auth JWT real + aislamiento por tenant en el backend → brief: `.workflow/briefs/wave1-executor-1.md` (merge `2532cc8`)
+- [x] T2 (executor-2): partir el monolito frontend en módulos + adaptar al contrato API + sesión en localStorage → brief: `.workflow/briefs/wave1-executor-2.md` (merge `aba3ab5`)
 
 ### Plan de integración
 
@@ -165,3 +165,4 @@ además verifica (evidencia = salida de comandos):
 | 2026-08-13 | Trabajar directamente contra MongoDB Atlas (solo datos de prueba hasta ahora); el seed demo queda disponible | Aprobado por el usuario; simplifica los humos de integración |
 | 2026-08-13 | OTP por WhatsApp: proveedor objetivo = WhatsApp Cloud API (Meta); n8n se descarta para OTP y se reserva para automatización de cobranza (ola 6+) | Para un código de 6 dígitos, una llamada directa del backend al proveedor es lo mínimo que funciona; n8n añade orquestación que no se necesita en el flujo de alta |
 | 2026-08-13 | Stripe y Círculo de Crédito: el usuario creará cuentas cuando la ola las pida (5 y 6) | Confirmado por el usuario, presupuesto disponible |
+| 2026-08-17 | Integración ola 1: merges `2532cc8` (e1) → `aba3ab5` (e2), orden del plan, sin conflictos. Build + tests del árbol integrado OK (backend 23/23, frontend check wasm + 8/8). **Humo BLOQUEADO por precondición**: `backend/.env` tiene `JWT_SECRET` duplicado — la línea 2 es un placeholder vacío (`JWT_SECRET=""`) que gana la carga de dotenvy y el backend paniquea en `auth.rs:59-61` con "JWT_SECRET está vacía". La línea 3 sí contiene el secreto real (66 chars). NO es fallo del árbol integrado: el código compila y los tests de JWT pasan. Acción humana requerida: borrar la línea vacía (dejar solo el secreto real), relanzar `cd backend && cargo run`, re-correr el humo del plan | El integrador nunca escribe `JWT_SECRET` (plan §Plan de integración); por eso se detiene y reporta en vez de deduplicar el `.env` |
