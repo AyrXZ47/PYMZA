@@ -8,13 +8,33 @@ Formato de intercambio: `application/json`.
 
 Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
 
-> Autenticación: no hay tokens reales. El login devuelve un token estático `"token-temporal-123"` y las demás rutas no lo validan.
+## Autenticación (JWT Bearer)
+
+El login devuelve un **JWT real** (HS256, firmado con `JWT_SECRET`, caducidad 24h)
+con claims `sub=<correo>`, `nombre=<nombre_empresa>` y `exp` (timestamp unix).
+
+- Todas las rutas salvo `POST /api/login` y `POST /api/empresas` **requieren** el
+  header `Authorization: Bearer <token>`.
+- Si el token falta, es inválido, está malformado o expirado → `401`:
+  ```json
+  {
+    "status": "error",
+    "message": "No autorizado: token JWT ausente, inválido o expirado"
+  }
+  ```
+- El **tenant (empresa) se deriva del token** (`sub` = correo de la empresa),
+  nunca de path parameters ni del body. Los documentos de `planes_pago` y
+  `dashboard_stats` guardan `empresa: <correo>`.
+- `JWT_SECRET` es una variable de entorno obligatoria (`backend/.env`, ver
+  `.env.example`); el backend falla al arrancar con mensaje claro si falta.
+- Datos previos al aislamiento multi-tenant (empresa = nombre comercial) se
+  migran con `backend/scripts/migrate_tenant.js` (idempotente).
 
 ---
 
-## POST `/api/login`
+## POST `/api/login` — pública
 
-Autentica una empresa (correo + password).
+Autentica una empresa (correo + password) y devuelve un JWT real.
 
 **Payload:**
 ```json
@@ -28,8 +48,8 @@ Autentica una empresa (correo + password).
 ```json
 {
   "status": "success",
-  "empresa": "Empresa Demo S.A. de C.V.",
-  "token": "token-temporal-123"
+  "empresa": "Ferretería El Tornillo",
+  "token": "<jwt-generado>" 
 }
 ```
 
@@ -41,11 +61,11 @@ Autentica una empresa (correo + password).
 }
 ```
 
-**Colección Mongo:** `empresas` (busca por `correo` + `password`).
+**Colección Mongo:** `empresas` (busca por `correo` + verifica el hash argon2id de `password`).
 
 ---
 
-## POST `/api/empresas`
+## POST `/api/empresas` — pública
 
 Alta de una empresa nueva (registro). Valida correo (1 `@`, dominio con punto, sin espacios) y contraseña de al menos 8 caracteres; rechaza correos duplicados.
 
@@ -69,35 +89,30 @@ Alta de una empresa nueva (registro). Valida correo (1 `@`, dominio con punto, s
 }
 ```
 
+> La alta no devuelve token: el flujo de registro termina en el login.
+
 **Respuestas (error):**
 ```json
-{
-  "status": "error",
-  "message": "Correo inválido"
-}
+{ "status": "error", "message": "Correo inválido" }
 ```
 
 ```json
-{
-  "status": "error",
-  "message": "La contraseña debe tener al menos 8 caracteres"
-}
+{ "status": "error", "message": "La contraseña debe tener al menos 8 caracteres" }
 ```
 
 ```json
-{
-  "status": "error",
-  "message": "Ya existe una empresa registrada con ese correo"
-}
+{ "status": "error", "message": "Ya existe una empresa registrada con ese correo" }
 ```
 
 **Colección Mongo:** `empresas` (inserta; la respuesta no incluye la contraseña).
 
 ---
 
-## GET `/api/clientes/:curp`
+## GET `/api/clientes/:curp` — protegida
 
 Busca un cliente existente en la red PYMZA por su CURP.
+
+**Requiere:** `Authorization: Bearer <token>`
 
 **Parámetro de ruta:** `:curp` — CURP de 18 caracteres.
 
@@ -125,65 +140,15 @@ Busca un cliente existente en la red PYMZA por su CURP.
 }
 ```
 
-**Respuesta (error de DB):**
-```json
-{
-  "status": "error"
-}
-```
-
 **Colección Mongo:** `clientes` (busca por `curp`).
 
 ---
 
-## POST `/api/clientes/:curp/reportar`
-
-Reporta morosidad de un cliente a la red PYMZA (alerta temprana). Marca al cliente con la alerta; la busca `GET /api/clientes/:curp` posterior la devuelve en el campo `alerta`.
-
-**Parámetro de ruta:** `:curp` — CURP de 18 caracteres.
-
-**Payload:**
-```json
-{
-  "empresa": "Ferretería El Tornillo",
-  "motivo": "Desapareció con deuda pendiente"
-}
-```
-
-**Respuesta (éxito):**
-```json
-{
-  "status": "success",
-  "alerta": {
-    "empresa": "Ferretería El Tornillo",
-    "motivo": "Desapareció con deuda pendiente"
-  }
-}
-```
-
-**Respuesta (campos vacíos):**
-```json
-{
-  "status": "error",
-  "message": "Empresa y motivo son obligatorios"
-}
-```
-
-**Respuesta (cliente inexistente):**
-```json
-{
-  "status": "not_found",
-  "message": "Cliente no existe en la red PYMZA"
-}
-```
-
-**Colección Mongo:** `clientes` (actualiza el campo `alerta`).
-
----
-
-## POST `/api/clientes`
+## POST `/api/clientes` — protegida
 
 Alta de un cliente nuevo. Valida el formato de CURP (18 caracteres alfanuméricos) y evita duplicados. El score base es `550` y el nivel de riesgo `"Medio"`.
+
+**Requiere:** `Authorization: Bearer <token>`
 
 **Payload:**
 ```json
@@ -211,47 +176,63 @@ Alta de un cliente nuevo. Valida el formato de CURP (18 caracteres alfanumérico
 }
 ```
 
-**Respuesta (CURP inválida):**
-```json
-{
-  "status": "error",
-  "message": "CURP inválida: deben ser 18 caracteres alfanuméricos"
-}
-```
-
-**Respuesta (duplicado):**
-```json
-{
-  "status": "error",
-  "message": "Cliente ya existe en la red PYMZA"
-}
-```
+**Respuestas (error):** CURP inválida / duplicado (mensajes descriptivos), `401` sin token.
 
 **Colección Mongo:** `clientes` (inserta).
 
 ---
 
-## POST `/api/ocr`
+## POST `/api/clientes/:curp/reportar` — protegida
 
-Validación OCR (placeholder). Devuelve una respuesta fija, no toca la base.
+Reporta morosidad de un cliente a la red PYMZA (alerta temprana). Marca al cliente con la alerta; la busca `GET /api/clientes/:curp` posterior la devuelve en el campo `alerta`.
 
-**Payload:** ninguno (no se lee).
+**Requiere:** `Authorization: Bearer <token>` — la empresa que reporta sale del token (`alerta.empresa = <correo>`), ya no se envía en el body.
 
-**Respuesta:**
+**Parámetro de ruta:** `:curp` — CURP de 18 caracteres.
+
+**Payload:**
 ```json
 {
-  "status": "success",
-  "id": "12345"
+  "motivo": "Desapareció con deuda pendiente"
 }
 ```
 
-**Colección Mongo:** ninguna.
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "alerta": {
+    "empresa": "demo@pymza.mx",
+    "motivo": "Desapareció con deuda pendiente"
+  }
+}
+```
+
+**Respuesta (motivo vacío):**
+```json
+{
+  "status": "error",
+  "message": "Motivo es obligatorio"
+}
+```
+
+**Respuesta (cliente inexistente):**
+```json
+{
+  "status": "not_found",
+  "message": "Cliente no existe en la red PYMZA"
+}
+```
+
+**Colección Mongo:** `clientes` (actualiza el campo `alerta`).
 
 ---
 
-## POST `/api/creditos/evaluar`
+## POST `/api/creditos/evaluar` — protegida
 
 Evalúa un crédito: tasa según plazo (3m=3%, 6m=6%, 9m=10%, 12m=15%, otro=5%), aprueba/rechaza por capacidad de pago y construye el plan de pagos.
+
+**Requiere:** `Authorization: Bearer <token>`
 
 **Payload:**
 ```json
@@ -278,7 +259,7 @@ Evalúa un crédito: tasa según plazo (3m=3%, 6m=6%, 9m=10%, 12m=15%, otro=5%),
       "saldo_restante": 8333.33
     }
   ],
-  "consideraciones": "Crédito APROBADO.\nMonto solicitado: $10000.00\nPlazo: 6 meses\nTasa de interés: 6%\nTotal a pagar: $10600.00\nPago mensual: $1766.67\n\nEl cliente tiene capacidad de pago suficiente."
+  "consideraciones": "Crédito APROBADO.\n..."
 }
 ```
 
@@ -286,24 +267,22 @@ La capacidad de pago es `$5000.00` mensual si el score del cliente es mayor a 70
 
 **Respuesta (cliente no existe):**
 ```json
-{
-  "status": "error",
-  "message": "Cliente no encontrado"
-}
+{ "status": "error", "message": "Cliente no encontrado" }
 ```
 
 **Colección Mongo:** `clientes` (solo lectura, por `curp`). No inserta nada.
 
 ---
 
-## POST `/api/creditos/autorizar`
+## POST `/api/creditos/autorizar` — protegida
 
 Autoriza un crédito ya evaluado: inserta el plan de pago y actualiza (upsert) las estadísticas del dashboard.
+
+**Requiere:** `Authorization: Bearer <token>` — la empresa sale del token (`planes_pago.empresa` / `dashboard_stats.empresa` = `<correo>`), ya no se envía en el body.
 
 **Payload:**
 ```json
 {
-  "empresa": "Empresa Demo S.A. de C.V.",
   "cliente_curp": "GARM980412HDFNRL08",
   "producto": "Crédito comercial",
   "monto_total": 10600.0,
@@ -315,28 +294,23 @@ Autoriza un crédito ya evaluado: inserta el plan de pago y actualiza (upsert) l
 
 **Respuesta (éxito):**
 ```json
-{
-  "status": "success"
-}
+{ "status": "success" }
 ```
 
 **Respuesta (error al guardar el plan de pago):**
 ```json
-{
-  "status": "error",
-  "message": "Error al guardar el plan de pago"
-}
+{ "status": "error", "message": "Error al guardar el plan de pago" }
 ```
 
-**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` fija) y `dashboard_stats` (upsert por `empresa` con `$inc` en `creditos_activos`, `capital_prestado`, `proximos_cobros`).
+**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa` con `$inc` en `creditos_activos`, `capital_prestado`, `proximos_cobros`).
 
 ---
 
-## GET `/api/creditos/:empresa`
+## GET `/api/creditos` — protegida
 
-Lista los créditos (planes de pago) activos de una empresa.
+Lista los créditos (planes de pago) activos de la empresa autenticada.
 
-**Parámetro de ruta:** `:empresa` — nombre de la empresa.
+**Requiere:** `Authorization: Bearer <token>` — los créditos se filtran por `empresa = <correo del token>`; ya no hay path param `:empresa`.
 
 **Respuesta (éxito):**
 ```json
@@ -344,7 +318,7 @@ Lista los créditos (planes de pago) activos de una empresa.
   "status": "success",
   "creditos": [
     {
-      "empresa": "Empresa Demo S.A. de C.V.",
+      "empresa": "demo@pymza.mx",
       "cliente_curp": "GARM980412HDFNRL08",
       "producto": "Crédito comercial",
       "monto_total": 10600.0,
@@ -358,29 +332,22 @@ Lista los créditos (planes de pago) activos de una empresa.
 }
 ```
 
-**Respuesta (error de DB):**
-```json
-{
-  "status": "error"
-}
-```
-
 **Colección Mongo:** `planes_pago` (busca por `empresa`).
 
 ---
 
-## GET `/api/dashboard/:empresa`
+## GET `/api/dashboard` — protegida
 
-Estadísticas del dashboard de una empresa.
+Estadísticas del dashboard de la empresa autenticada.
 
-**Parámetro de ruta:** `:empresa` — nombre de la empresa.
+**Requiere:** `Authorization: Bearer <token>` — las stats se filtran por `empresa = <correo del token>`; ya no hay path param `:empresa`.
 
 **Respuesta (con datos):**
 ```json
 {
   "status": "success",
   "stats": {
-    "empresa": "Empresa Demo S.A. de C.V.",
+    "empresa": "demo@pymza.mx",
     "creditos_activos": 1,
     "capital_prestado": 10600.0,
     "proximos_cobros": 6
@@ -393,7 +360,7 @@ Estadísticas del dashboard de una empresa.
 {
   "status": "success",
   "stats": {
-    "empresa": "Empresa Demo S.A. de C.V.",
+    "empresa": "demo@pymza.mx",
     "creditos_activos": 0,
     "capital_prestado": 0.0,
     "proximos_cobros": 0
@@ -402,3 +369,20 @@ Estadísticas del dashboard de una empresa.
 ```
 
 **Colección Mongo:** `dashboard_stats` (busca por `empresa`).
+
+---
+
+## POST `/api/ocr` — protegida
+
+Validación OCR (placeholder). Devuelve una respuesta fija, no toca la base.
+
+**Requiere:** `Authorization: Bearer <token>`
+
+**Payload:** ninguno (no se lee).
+
+**Respuesta:**
+```json
+{ "status": "success", "id": "12345" }
+```
+
+**Colección Mongo:** ninguna.
