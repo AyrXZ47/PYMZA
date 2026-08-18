@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use axum::{extract::State, routing::{get, post}, Json, Router};
 
-use auth::{cors_layer, login_empresa};
+use auth::{cors_layer, jwt_secret, login_empresa, EmpresaSession};
 use routes::cliente::{buscar_cliente, crear_cliente, reportar_cliente};
 use routes::credito::{autorizar_credito, evaluar_credito, obtener_creditos, obtener_dashboard};
 use routes::empresa::alta_empresa;
@@ -15,6 +15,10 @@ use routes::empresa::alta_empresa;
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+
+    // Falla al arrancar con mensaje claro si falta JWT_SECRET; una vez inicializada
+    // aquí (OnceLock), el extractor EmpresaSession nunca vuelve a fallar por env ausente.
+    jwt_secret();
 
     let db_client = db::connect().await.expect("Fallo crítico en conexión DB");
 
@@ -27,8 +31,8 @@ async fn main() {
         .route("/api/clientes/:curp/reportar", post(reportar_cliente))
         .route("/api/creditos/evaluar", post(evaluar_credito))
         .route("/api/creditos/autorizar", post(autorizar_credito))
-        .route("/api/creditos/:empresa", get(obtener_creditos))
-        .route("/api/dashboard/:empresa", get(obtener_dashboard))
+        .route("/api/creditos", get(obtener_creditos))
+        .route("/api/dashboard", get(obtener_dashboard))
         .layer(cors_layer())
         .with_state(db_client);
 
@@ -43,7 +47,11 @@ async fn main() {
 }
 
 // ponytail: placeholder OCR (respuesta fija, sin DB) que aún no justifica módulo
-// propio; el techo es moverlo a routes/ocr.rs cuando exista OCR real.
-async fn process_ocr(State(_client): State<mongodb::Client>) -> Json<serde_json::Value> {
+// propio; el techo es moverlo a routes/ocr.rs cuando exista OCR real. Requiere
+// sesión JWT como las demás rutas protegidas del contrato ola 1.
+async fn process_ocr(
+    State(_client): State<mongodb::Client>,
+    _sesion: EmpresaSession,
+) -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "success", "id": "12345"}))
 }

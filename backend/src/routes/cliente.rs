@@ -3,10 +3,12 @@ use axum::{
     Json,
 };
 
+use crate::auth::EmpresaSession;
 use crate::models::cliente::{AlertaMorosidad, Cliente, CrearClienteReq, ReportarReq};
 
 pub async fn buscar_cliente(
     State(client): State<mongodb::Client>,
+    _sesion: EmpresaSession,
     axum::extract::Path(curp): axum::extract::Path<String>
 ) -> Json<serde_json::Value> {
     let coll = client.database("pymza").collection::<Cliente>("clientes");
@@ -32,6 +34,7 @@ pub async fn buscar_cliente(
 
 pub async fn crear_cliente(
     State(client): State<mongodb::Client>,
+    _sesion: EmpresaSession,
     Json(payload): Json<CrearClienteReq>,
 ) -> Json<serde_json::Value> {
     if !es_curp_valida(&payload.curp) {
@@ -72,19 +75,22 @@ pub async fn crear_cliente(
 
 pub async fn reportar_cliente(
     State(client): State<mongodb::Client>,
+    sesion: EmpresaSession,
     axum::extract::Path(curp): axum::extract::Path<String>,
     Json(payload): Json<ReportarReq>,
 ) -> Json<serde_json::Value> {
-    if payload.empresa.trim().is_empty() || payload.motivo.trim().is_empty() {
+    if payload.motivo.trim().is_empty() {
         return Json(serde_json::json!({
             "status": "error",
-            "message": "Empresa y motivo son obligatorios"
+            "message": "Motivo es obligatorio"
         }));
     }
 
     let coll = client.database("pymza").collection::<Cliente>("clientes");
     let alerta = AlertaMorosidad {
-        empresa: payload.empresa,
+        // ponytail: la alerta guarda el correo (tenant key), no el nombre
+        // comercial; si la UI necesita el nombre tendrá que enriquecer en lectura.
+        empresa: sesion.correo,
         motivo: payload.motivo,
     };
     // ponytail: un cliente con reporte previo se sobrescribe con el último;
