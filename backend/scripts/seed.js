@@ -9,6 +9,9 @@ if (!uri.includes('127.0.0.1') && !uri.includes('localhost')) {
 }
 
 const EMPRESA = 'Ferretería El Tornillo';
+// Tenant key = correo (contrato ola 1): los docs de planes_pago/dashboard_stats
+// guardan `empresa: <correo>`, no el nombre comercial.
+const CORREO_DEMO = 'demo@pymza.mx';
 
 // Hash precomputado de 'demo123' (argon2id, params por defecto: m=19456, t=2, p=1).
 // mongosh no puede hashear: se genera offline y se documenta aquí.
@@ -18,7 +21,7 @@ const HASH_DEMO123 = '$argon2id$v=19$m=19456,t=2,p=1$S5gl3Bbi6xPFEATdpoI9yA$agd7
 db.dropDatabase();
 
 db.empresas.insertMany([
-  { correo: 'demo@pymza.mx', password: HASH_DEMO123, nombre_empresa: EMPRESA },
+  { correo: CORREO_DEMO, password: HASH_DEMO123, nombre_empresa: EMPRESA },
 ]);
 
 db.clientes.insertMany([
@@ -53,7 +56,7 @@ db.clientes.insertMany([
 
 db.planes_pago.insertMany([
   {
-    empresa: EMPRESA,
+    empresa: CORREO_DEMO,
     cliente_curp: 'RAMJ920215MDFMZR03',
     producto: 'Taladro Bosch',
     monto_total: 3200.0,
@@ -66,7 +69,7 @@ db.planes_pago.insertMany([
 ]);
 
 db.dashboard_stats.insertOne({
-  empresa: EMPRESA,
+  empresa: CORREO_DEMO,
   creditos_activos: 1,
   capital_prestado: 3200.0,
   proximos_cobros: 6,

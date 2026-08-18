@@ -28,7 +28,7 @@ pub struct EvaluarRes {
 
 #[derive(Deserialize)]
 pub struct AutorizarReq {
-    pub empresa: String,
+    // La empresa sale del token JWT (EmpresaSession), no del body.
     pub cliente_curp: String,
     pub producto: String,
     pub monto_total: f64,

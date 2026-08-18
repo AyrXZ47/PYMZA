@@ -4,6 +4,7 @@ use axum::{
 };
 use futures::StreamExt;
 
+use crate::auth::EmpresaSession;
 use crate::models::cliente::Cliente;
 use crate::models::credito::{AutorizarReq, DashboardStats, EvaluarReq, EvaluarRes, PagoInfo, PlanPago};
 
@@ -38,6 +39,7 @@ fn generar_plan_pagos(monto: f64, plazo_meses: i32, tasa: f64) -> Vec<PagoInfo> 
 
 pub async fn evaluar_credito(
     State(client): State<mongodb::Client>,
+    _sesion: EmpresaSession,
     Json(payload): Json<EvaluarReq>
 ) -> Json<serde_json::Value> {
     let coll_clientes = client.database("pymza").collection::<Cliente>("clientes");
@@ -94,10 +96,11 @@ pub async fn evaluar_credito(
 
 pub async fn autorizar_credito(
     State(client): State<mongodb::Client>,
+    sesion: EmpresaSession,
     Json(payload): Json<AutorizarReq>
 ) -> Json<serde_json::Value> {
     let plan_pago = PlanPago {
-        empresa: payload.empresa.clone(),
+        empresa: sesion.correo.clone(),
         cliente_curp: payload.cliente_curp.clone(),
         producto: payload.producto.clone(),
         monto_total: payload.monto_total,
@@ -115,7 +118,7 @@ pub async fn autorizar_credito(
     }
 
     let coll_stats = client.database("pymza").collection::<DashboardStats>("dashboard_stats");
-    let filter = mongodb::bson::doc! { "empresa": &payload.empresa };
+    let filter = mongodb::bson::doc! { "empresa": &sesion.correo };
     let update = mongodb::bson::doc! {
         "$inc": {
             "creditos_activos": 1,
@@ -133,11 +136,11 @@ pub async fn autorizar_credito(
 
 pub async fn obtener_creditos(
     State(client): State<mongodb::Client>,
-    axum::extract::Path(empresa): axum::extract::Path<String>,
+    sesion: EmpresaSession,
 ) -> Json<serde_json::Value> {
     let coll = client.database("pymza").collection::<PlanPago>("planes_pago");
 
-    match coll.find(mongodb::bson::doc! { "empresa": &empresa }, None).await {
+    match coll.find(mongodb::bson::doc! { "empresa": &sesion.correo }, None).await {
         Ok(mut cursor) => {
             let mut creditos = Vec::new();
             while let Some(Ok(plan)) = cursor.next().await {
@@ -154,18 +157,18 @@ pub async fn obtener_creditos(
 
 pub async fn obtener_dashboard(
     State(client): State<mongodb::Client>,
-    axum::extract::Path(empresa): axum::extract::Path<String>,
+    sesion: EmpresaSession,
 ) -> Json<serde_json::Value> {
     let coll = client.database("pymza").collection::<DashboardStats>("dashboard_stats");
 
-    match coll.find_one(mongodb::bson::doc! { "empresa": &empresa }, None).await {
+    match coll.find_one(mongodb::bson::doc! { "empresa": &sesion.correo }, None).await {
         Ok(Some(stats)) => Json(serde_json::json!({
             "status": "success",
             "stats": stats
         })),
         Ok(None) => Json(serde_json::json!({
             "status": "success",
-            "stats": { "empresa": empresa.clone(), "creditos_activos": 0, "capital_prestado": 0.0, "proximos_cobros": 0 }
+            "stats": { "empresa": sesion.correo, "creditos_activos": 0, "capital_prestado": 0.0, "proximos_cobros": 0 }
         })),
         Err(_) => Json(serde_json::json!({"status": "error"})),
     }

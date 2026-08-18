@@ -29,6 +29,6 @@ pub struct CrearClienteReq {
 
 #[derive(Deserialize)]
 pub struct ReportarReq {
-    pub empresa: String,
+    // La empresa sale del token JWT (EmpresaSession), no del body.
     pub motivo: String,
 }
