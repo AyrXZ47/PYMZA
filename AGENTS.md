@@ -41,12 +41,16 @@ Not lazy about: input validation at trust boundaries, error handling that preven
 PYMZA/
 ├── backend/          # Axum server
 │   └── src/
-│       ├── main.rs   # ENTRYPOINT: all 10 routes live here (handlers are inline)
+│       ├── main.rs   # ENTRYPOINT: wiring — Router with the 10 routes (handlers live in routes/)
+│       ├── auth.rs   # JWT HS256 (jsonwebtoken v9), EmpresaSession extractor, argon2id, CORS
 │       ├── db.rs     # MongoDB pool (max 10); hardcodes 127.0.0.1 to avoid IPv6 timeout
-│       └── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
-├── frontend/         # Dioxus WASM SPA — entire app is src/main.rs (~877 lines), no router
+│       ├── models/   # Domain structs; mod.rs wires in empresa, cliente, credito
+│       └── routes/   # handlers per domain: empresa.rs, cliente.rs, credito.rs (+ OCR in main.rs)
+├── frontend/         # Dioxus WASM SPA — modular (main.rs is wiring), no router
 │   ├── src/
-│   │   └── main.rs   # Entrypoint: Login + Sidebar + MainArea (MenuState enum, conditional render)
+│   │   ├── main.rs   # Entrypoint (~103 lines): App + MenuState + conditional render
+│   │   ├── api.rs    # Shared HTTP client, API_BASE, session (localStorage `pymza_token`)
+│   │   └── components/  # login, alta_cliente, plan_modal, cartera, dashboard, sidebar (mod.rs)
 │   ├── tailwind.css  # Tailwind input (tracked, 1 line). `dx serve` auto-compiles → assets/tailwind.css
 │   └── clippy.toml   # Only lint config in the repo (Dioxus signal read-locks over await)
 └── docker-compose.yml
@@ -67,7 +71,7 @@ cd backend && MONGODB_URI=... cargo run  # Backend on 127.0.0.1:3000
 cd frontend && dx serve                  # Frontend on :8080 (NO uses --hot-reload: en dx 0.7.9 pide un valor: --hot-reload true)
 ```
 
-Backend reads `MONGODB_URI` from `.env` (or env var). Defaults to `mongodb://127.0.0.1:27017`. Frontend hardcodes `http://127.0.0.1:3000` for all API calls (main.rs) — change it in one place.
+Backend reads `MONGODB_URI` and `JWT_SECRET` from `.env` (or env vars). `MONGODB_URI` defaults to `mongodb://127.0.0.1:27017`; `JWT_SECRET` is mandatory (backend panics at startup with a clear message if missing). Frontend hardcodes `http://127.0.0.1:3000` for all API calls (`api.rs`) — change it in one place.
 
 On NixOS (see `modules/apps/rust-dev.nix` in yovick/nixos-config): after the first `nixos-rebuild switch`, run once per machine `rustup default stable && rustup target add wasm32-unknown-unknown`. MongoDB's license is SSPL (unfree).
 
@@ -88,7 +92,7 @@ cd frontend && ./tailwind.sh        # o: ./tailwind.sh --watch durante desarroll
 - **No router:** app uses a `MenuState` enum + conditional rendering. The `router` feature is enabled in `frontend/Cargo.toml` but unused.
 - **`frontend/tailwind.css`** (tracked) is the Tailwind input; the compiled `assets/tailwind.css` is gitignored/generated.
 - **No tests, no CI.** Only lint config is `frontend/clippy.toml`. `cargo test`/`dx check` are the only verification available.
-- **Login** — password hashed with argon2id (PHC) in `empresas`; token is still static `"token-temporal-123"` (no JWT, routes don't validate it).
+- **Auth** — JWT real (HS256, `jsonwebtoken` v9, exp 24h): `POST /api/login` firma los claims `sub=correo`, `nombre`, `exp`. El extractor `EmpresaSession` protege 8 rutas (401 con token ausente/inválido/expirado); solo `POST /api/login` y `POST /api/empresas` son públicas. El tenant (empresa) sale del token, nunca del path ni del body.
 
 ## API Endpoints (backend)
 
@@ -96,23 +100,27 @@ Collections: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/login` | Empresa auth (correo + password) |
-| POST | `/api/empresas` | Alta de empresa nueva (valida correo y contraseña, evita duplicados) |
+| POST | `/api/login` | Empresa auth (correo + password) → emite JWT (pública) |
+| POST | `/api/empresas` | Alta de empresa nueva: valida correo/contraseña, evita duplicados (pública) |
 | GET | `/api/clientes/:curp` | Lookup client by CURP in PYMZA network |
 | POST | `/api/clientes` | Alta de cliente nuevo (valida CURP, evita duplicados; score base 550) |
 | POST | `/api/clientes/:curp/reportar` | Alerta temprana: marca al cliente como moroso/desaparecido con motivo (red colaborativa) |
 | POST | `/api/ocr` | OCR validation (placeholder, fixed JSON) |
 | POST | `/api/creditos/evaluar` | Evaluate credit: rate by plazo (3m=3% … 12m=15%), approve/reject by score, build payment plan |
 | POST | `/api/creditos/autorizar` | Insert `planes_pago` + upsert `dashboard_stats` |
-| GET | `/api/creditos/:empresa` | Active `planes_pago` for a company (Cartera) |
-| GET | `/api/dashboard/:empresa` | Dashboard stats per empresa |
+| GET | `/api/creditos` | Active `planes_pago` for the tenant (Cartera) — empresa del token |
+| GET | `/api/dashboard` | Dashboard stats of the tenant — empresa del token |
+
+Except `POST /api/login` and `POST /api/empresas`, every route requires
+`Authorization: Bearer <jwt>`; the tenant (empresa) comes from the token
+(`sub` = correo), never from the path or body.
 
 ## Secrets / Config
 
-- `backend/.env` (gitignored) with `MONGODB_URI=""` — see `.env.example`. dotenvy busca `.env` desde el cwd hacia arriba, así que sirve desde `backend/` o la raíz.
+- `backend/.env` (gitignored) with `MONGODB_URI=""` and `JWT_SECRET=""` — see `.env.example`. dotenvy busca `.env` desde el cwd hacia arriba, así que sirve desde `backend/` o la raíz.
 - Never print or commit `MONGODB_URI`; to connect a real Atlas DB the user writes the URI into `backend/.env` themselves — verify connectivity via the backend log (`Pool de conexiones MongoDB inicializado`), never via echoing the secret.
 - Default MongoDB URI: `mongodb://127.0.0.1:27017`
-- No auth tokens, no JWT — login returns static `"token-temporal-123"`
+- `JWT_SECRET` es obligatoria: el backend falla al arrancar (panic con mensaje claro) si falta o está vacía. Firma los JWT de sesión (HS256, exp 24h); sin refresh tokens ni cookies httpOnly (techo documentado en el decision log del plan).
 
 
 <!-- headroom:rtk-instructions -->

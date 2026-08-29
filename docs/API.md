@@ -310,7 +310,7 @@ Autoriza un crédito ya evaluado: inserta el plan de pago y actualiza (upsert) l
 
 Lista los créditos (planes de pago) activos de la empresa autenticada.
 
-**Requiere:** `Authorization: Bearer <token>` — los créditos se filtran por `empresa = <correo del token>`; ya no hay path param `:empresa`.
+**Requiere:** `Authorization: Bearer <token>` — los créditos se filtran por `empresa = <correo del token>`; la empresa se lee del token, ya no de la URL.
 
 **Respuesta (éxito):**
 ```json
@@ -340,7 +340,7 @@ Lista los créditos (planes de pago) activos de la empresa autenticada.
 
 Estadísticas del dashboard de la empresa autenticada.
 
-**Requiere:** `Authorization: Bearer <token>` — las stats se filtran por `empresa = <correo del token>`; ya no hay path param `:empresa`.
+**Requiere:** `Authorization: Bearer <token>` — las stats se filtran por `empresa = <correo del token>`; la empresa se lee del token, ya no de la URL.
 
 **Respuesta (con datos):**
 ```json
