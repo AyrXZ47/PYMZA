@@ -24,29 +24,29 @@ pub fn PlanModal(
 
     rsx! {
         div { class: "fixed inset-0 bg-black/80 flex items-center justify-center z-50",
-            div { class: "bg-slate-900 border border-slate-700 p-6 rounded-xl w-full max-w-2xl",
+            div { class: "bg-white border border-slate-200 p-6 rounded-xl w-full max-w-2xl dark:bg-slate-900 dark:border-slate-700",
                 match modal_step() {
                     0 => rsx! {
-                        h2 { class: "text-xl font-bold text-white mb-4", "Configurar Plan de Pagos" }
+                        h2 { class: "text-xl font-bold text-slate-900 mb-4 dark:text-white", "Configurar Plan de Pagos" }
                         div { class: "flex flex-col gap-4",
-                            label { class: "text-slate-400 text-sm", "Producto o Servicio" }
+                            label { class: "text-slate-500 text-sm dark:text-slate-400", "Producto o Servicio" }
                             input {
-                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
                                 value: plan_producto(),
                                 oninput: move |e| plan_producto.set(e.value())
                             }
 
-                            label { class: "text-slate-400 text-sm", "Monto Total ($)" }
+                            label { class: "text-slate-500 text-sm dark:text-slate-400", "Monto Total ($)" }
                             input {
-                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
                                 type: "number",
                                 value: plan_monto(),
                                 oninput: move |e| plan_monto.set(e.value())
                             }
 
-                            label { class: "text-slate-400 text-sm", "Plazo (Meses)" }
+                            label { class: "text-slate-500 text-sm dark:text-slate-400", "Plazo (Meses)" }
                             select {
-                                class: "bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 outline-none focus:border-blue-500",
+                                class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
                                 value: plan_plazo(),
                                 onchange: move |e| plan_plazo.set(e.value()),
                                 option { value: "3", "3 meses — Tasa 3%" }
@@ -57,7 +57,7 @@ pub fn PlanModal(
                         }
                         div { class: "flex justify-end gap-3 mt-6",
                             button {
-                                class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-lg",
+                                class: "bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold px-4 py-2 rounded-lg dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-white",
                                 onclick: move |_| { show_plan_modal.set(false); modal_step.set(0); },
                                 "Cancelar"
                             }
@@ -122,38 +122,38 @@ pub fn PlanModal(
                     },
                     1 => rsx! {
                         div { class: "flex flex-col items-center justify-center py-12",
-                            div { class: "text-blue-400 text-lg font-semibold animate-pulse", "Evaluando riesgo en Red PYMZA..." }
+                            div { class: "text-blue-600 dark:text-blue-400 text-lg font-semibold animate-pulse", "Evaluando riesgo en Red PYMZA..." }
                         }
                     },
                     2 => {
                         let planes = eval_plan_pagos();
                         rsx! {
-                        h2 { class: "text-xl font-bold text-white mb-4", "Resultado de Evaluación" }
+                        h2 { class: "text-xl font-bold text-slate-900 mb-4 dark:text-white", "Resultado de Evaluación" }
                         div { class: "flex flex-col gap-4",
                             div {
-                                class: format!("text-lg font-bold {}", if eval_estado() == "Aprobado" { "text-green-400" } else { "text-red-400" }),
+                                class: format!("text-lg font-bold {}", if eval_estado() == "Aprobado" { "text-green-600 dark:text-green-400" } else { "text-red-600 dark:text-red-400" }),
                                 "{eval_estado}"
                             }
 
-                            div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4",
+                            div { class: "bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-800 dark:border-slate-600",
                                 div { class: "grid grid-cols-2 gap-4",
                                     div {
-                                        div { class: "text-slate-400 text-xs uppercase mb-1", "Mensualidad Estimada" }
-                                        div { class: "text-2xl font-bold text-white", "${eval_pago_mensual} MXN" }
+                                        div { class: "text-slate-500 text-xs uppercase mb-1 dark:text-slate-400", "Mensualidad Estimada" }
+                                        div { class: "text-2xl font-bold text-slate-900 dark:text-white", "${eval_pago_mensual} MXN" }
                                     }
                                     div {
-                                        div { class: "text-slate-400 text-xs uppercase mb-1", "Tasa de Interés" }
+                                        div { class: "text-slate-500 text-xs uppercase mb-1 dark:text-slate-400", "Tasa de Interés" }
                                         div { class: "text-xl font-bold text-yellow-400", "{(eval_tasa_interes() * 100.0) as i32}%" }
                                     }
                                 }
                             }
 
-                            div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4",
-                                div { class: "text-slate-400 text-sm mb-2 font-semibold", "Plan de Pagos" }
+                            div { class: "bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-800 dark:border-slate-600",
+                                div { class: "text-slate-500 text-sm mb-2 font-semibold dark:text-slate-400", "Plan de Pagos" }
                                 div { class: "overflow-x-auto max-h-48 overflow-y-auto",
                                     table { class: "w-full text-sm text-left",
                                         thead {
-                                        tr { class: "text-slate-400 border-b border-slate-700",
+                                        tr { class: "text-slate-500 border-b border-slate-200 dark:text-slate-400 dark:border-slate-700",
                                             th { class: "py-2 px-2", "Mes" }
                                             th { class: "py-2 px-2", "Pago" }
                                             th { class: "py-2 px-2", "Interés" }
@@ -163,7 +163,7 @@ pub fn PlanModal(
                                         }
                                         tbody {
                                             for p in &planes {
-                                                tr { class: "border-b border-slate-700/50 text-slate-300",
+                                                tr { class: "border-b border-slate-200 text-slate-700 dark:border-slate-700/50 dark:text-slate-300",
                                                     td { class: "py-2 px-2", "{p.mes}" }
                                                     td { class: "py-2 px-2", "${p.pago}" }
                                                     td { class: "py-2 px-2", "${p.interes}" }
@@ -176,12 +176,12 @@ pub fn PlanModal(
                                 }
                             }
 
-                            div { class: "bg-slate-800 border border-slate-600 rounded-lg p-4 max-h-32 overflow-y-auto",
+                            div { class: "bg-slate-50 border border-slate-200 rounded-lg p-4 max-h-32 overflow-y-auto dark:bg-slate-800 dark:border-slate-600",
                                 div { class: "text-slate-400 text-sm mb-2", "Consideraciones" }
-                                div { class: "text-slate-200 text-sm whitespace-pre-wrap", "{consideraciones}" }
+                                div { class: "text-slate-700 text-sm whitespace-pre-wrap dark:text-slate-200", "{consideraciones}" }
                             }
 
-                            label { class: "flex items-start gap-2 text-slate-300 text-sm cursor-pointer",
+                            label { class: "flex items-start gap-2 text-slate-700 text-sm cursor-pointer dark:text-slate-300",
                                 input {
                                     type: "checkbox",
                                     class: "mt-1",
@@ -193,12 +193,12 @@ pub fn PlanModal(
                         }
                         div { class: "flex justify-end gap-3 mt-6",
                             button {
-                                class: "bg-slate-700 hover:bg-slate-600 text-white font-semibold px-4 py-2 rounded-lg",
+                                class: "bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold px-4 py-2 rounded-lg dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-white",
                                 onclick: move |_| { show_plan_modal.set(false); modal_step.set(0); },
                                 "Cerrar"
                             }
                             button {
-                                class: format!("text-white font-semibold px-4 py-2 rounded-lg {}", if terms_accepted() { "bg-green-600 hover:bg-green-700" } else { "bg-gray-600 cursor-not-allowed" }),
+                                class: format!("text-white font-semibold px-4 py-2 rounded-lg {}", if terms_accepted() { "bg-green-600 hover:bg-green-700" } else { "bg-slate-300 cursor-not-allowed dark:bg-gray-600" }),
                                 disabled: !terms_accepted(),
                                 onclick: move |_| {
                                     let cliente_curp = curp.clone();

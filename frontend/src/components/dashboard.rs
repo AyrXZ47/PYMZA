@@ -44,32 +44,32 @@ pub fn Dashboard(token: Signal<String>, is_authenticated: Signal<bool>) -> Eleme
     let stats = dashboard_stats();
     rsx! {
         div { class: "grid grid-cols-3 gap-6",
-            div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
+            div { class: "bg-white rounded-xl border border-slate-200 p-6 dark:bg-slate-900 dark:border-slate-700",
                 div { class: "flex items-center gap-3 mb-4",
-                    svg { class: "w-6 h-6 text-blue-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                    svg { class: "w-6 h-6 text-blue-600 dark:text-blue-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
                         path { d: "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" }
                     }
-                    div { class: "text-slate-400 text-sm font-medium", "Créditos Activos" }
+                    div { class: "text-slate-500 text-sm font-medium dark:text-slate-400", "Créditos Activos" }
                 }
-                div { class: "text-3xl font-bold text-white", "{stats.creditos_activos}" }
+                div { class: "text-3xl font-bold text-slate-900 dark:text-white", "{stats.creditos_activos}" }
             }
-            div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
+            div { class: "bg-white rounded-xl border border-slate-200 p-6 dark:bg-slate-900 dark:border-slate-700",
                 div { class: "flex items-center gap-3 mb-4",
-                    svg { class: "w-6 h-6 text-green-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                    svg { class: "w-6 h-6 text-green-600 dark:text-green-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
                         path { d: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" }
                     }
-                    div { class: "text-slate-400 text-sm font-medium", "Capital Prestado" }
+                    div { class: "text-slate-500 text-sm font-medium dark:text-slate-400", "Capital Prestado" }
                 }
-                div { class: "text-3xl font-bold text-white", "${stats.capital_prestado} MXN" }
+                div { class: "text-3xl font-bold text-slate-900 dark:text-white", "${stats.capital_prestado} MXN" }
             }
-            div { class: "bg-slate-900 rounded-xl border border-slate-700 p-6",
+            div { class: "bg-white rounded-xl border border-slate-200 p-6 dark:bg-slate-900 dark:border-slate-700",
                 div { class: "flex items-center gap-3 mb-4",
-                    svg { class: "w-6 h-6 text-yellow-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
+                    svg { class: "w-6 h-6 text-yellow-600 dark:text-yellow-400", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2",
                         path { d: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" }
                     }
-                    div { class: "text-slate-400 text-sm font-medium", "Próximos Cobros" }
+                    div { class: "text-slate-500 text-sm font-medium dark:text-slate-400", "Próximos Cobros" }
                 }
-                div { class: "text-3xl font-bold text-white", "{stats.proximos_cobros}" }
+                div { class: "text-3xl font-bold text-slate-900 dark:text-white", "{stats.proximos_cobros}" }
             }
         }
     }

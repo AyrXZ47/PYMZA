@@ -1,6 +1,9 @@
 pub mod alta_cliente;
 pub mod cartera;
 pub mod dashboard;
+pub mod landing;
 pub mod login;
 pub mod plan_modal;
+pub mod registro;
 pub mod sidebar;
+pub mod theme_toggle;
