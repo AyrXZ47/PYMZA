@@ -55,7 +55,7 @@ Consolidación del checklist de visión de [`PYMZA.md`](../PYMZA.md) con el esta
 
 ## 🎯 Alcance actual del producto (qué existe hoy)
 
-SaaS B2B multi-tenant: registro y login con JWT real (HS256, exp 24h, `JWT_SECRET` obligatoria), tenant aislado por correo de la empresa (sale del token, nunca del path ni del body), alta/búsqueda de clientes por CURP en la red (perfil único reutilizable, score base 550), evaluación/autorización de créditos con plan de pagos, cartera, dashboard y red de alerta temprana con banner. Backend modular (Axum: `main.rs` = wiring + `routes/`, `models/`, `auth.rs`); frontend modular (Dioxus 0.7: `main.rs` + `api.rs` + `components/`). Referencia completa: [`API.md`](API.md). Auditoría ola 1: `.workflow/audits/wave1.md` (APPROVED WITH EXCEPTIONS: E1 docs — saldada en ola 2; E2 humo UI navegador, pendiente humano).
+SaaS B2B multi-tenant: registro y login con JWT real (HS256, exp 24h, `JWT_SECRET` obligatoria), tenant aislado por correo de la empresa (sale del token, nunca del path ni del body), alta/búsqueda de clientes por CURP en la red (perfil único reutilizable, score base 550), evaluación/autorización de créditos con plan de pagos, cartera, dashboard y red de alerta temprana con banner. Backend modular (Axum: `main.rs` = wiring + `routes/`, `models/`, `auth.rs`); frontend modular (Dioxus 0.7: `main.rs` + `api.rs` + `components/`). Referencia completa: [`API.md`](API.md). Auditoría ola 1: `.workflow/audits/wave1.md` (APPROVED WITH EXCEPTIONS: E1 docs — saldada en ola 2; E2 humo UI navegador — saldada 2026-08-28).
 
 ## 💭 Ideas diferidas (solo anotadas, no planificadas)
 

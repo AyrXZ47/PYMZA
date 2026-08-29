@@ -38,8 +38,8 @@ Constraints:
 
 | Ola | Foco | Estado |
 |-----|------|--------|
-| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS: E1 AGENTS.md falso → ola 2; E2 humo UI navegador pendiente humano) |
-| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] integrada 2026-08-28 (build+tests OK, humo e2e OK; humo UI navegador pendiente humano) |
+| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS: E1 AGENTS.md falso → saldada ola 2; E2 humo UI navegador → saldada 2026-08-28, attest V) |
+| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 (APPROVED WITH EXCEPTIONS; build+tests OK, humo e2e OK, humo UI navegador OK — attest V) |
 | 3 | Confianza de identidad: validación CURP/correo/teléfono (WhatsApp Cloud API), KYC/OCR real (subida), score alternativo por recibos, contrato PDF | [ ] |
 | 4 | Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 5 | Dinero: suscripción Stripe (Billing) + dashboard de métricas de impacto | [ ] |
@@ -167,3 +167,4 @@ Ola 2 (nuevas):
 | 2026-08-17 | `API_BASE` vía `option_env!` con default dev | Configurable en build/deploy sin tocar código (Railway inyectará la URL real en la ola 4); techo: config runtime si se sirve desde otro origen |
 | 2026-08-17 | E1 (AGENTS.md falso) resuelta como executor de docs en la ola 2 | La auditoría la marcó con owner "planner ola 2"; docs = zona disjunta que da paralelismo al frontend |
 | 2026-08-17 | Backend no cambia en la ola 2 | El auto-login y la landing no requieren endpoints nuevos; menos riesgo, menos diff |
+| 2026-08-28 | Excepciones de la ola 2 saldadas con autorización de V: stash "not-paid" aplicado a `docs/ROADMAP.md` (commit f352e38) y humo UI OK | V attesta: "hasta ahora veo perfectamente la página web" → E2 de la ola 1 queda saldada; árbol sin stashes. Cierre auditable de ambas excepciones de `audits/wave2.md` |
