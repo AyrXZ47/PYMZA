@@ -39,7 +39,7 @@ Constraints:
 | Ola | Foco | Estado |
 |-----|------|--------|
 | 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS: E1 AGENTS.md falso → ola 2; E2 humo UI navegador pendiente humano) |
-| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] planificada (EN CURSO) |
+| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] integrada 2026-08-28 (build+tests OK, humo e2e OK; humo UI navegador pendiente humano) |
 | 3 | Confianza de identidad: validación CURP/correo/teléfono (WhatsApp Cloud API), KYC/OCR real (subida), score alternativo por recibos, contrato PDF | [ ] |
 | 4 | Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 5 | Dinero: suscripción Stripe (Billing) + dashboard de métricas de impacto | [ ] |
