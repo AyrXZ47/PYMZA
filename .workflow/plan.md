@@ -23,148 +23,178 @@ de crédito esté viva. Tauri/escritorio: el producto es web primero.
 |---|---|
 | Frontend | Dioxus 0.7.9 (pin `=0.7.9`) Rust → WASM + Tailwind v4. `frontend/AGENTS.md` es la referencia API obligatoria |
 | Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs` (JWT HS256) |
-| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats` |
-| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 4) |
+| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats` (+ `verificaciones` desde ola 3) |
+| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 5) |
 
 Constraints:
-- Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET` solo en `.env` local.
+- Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC) solo en `.env` local.
 - `Cargo.lock` gitignored (root `.gitignore`) — normal al añadir deps.
 - NixOS: `dx` no compila Tailwind; el CSS compilado (`frontend/assets/tailwind.css`) está commiteado. Si una ola cambia clases Tailwind, regenerar con `frontend/tailwind.sh` y commitear el CSS.
 - Sin CI. Verificación disponible: `cargo test` (backend y frontend nativo) + `cargo check --target wasm32-unknown-unknown` (frontend WASM).
 - Backend necesita librerías dev de OpenSSL para compilar (driver mongodb con `openssl-tls`).
-- Release gate (ola 4): `skills/security-audit` con cero CRITICAL/HIGH antes de producción.
+- Release gate (ola 5): `skills/security-audit` con cero CRITICAL/HIGH antes de producción.
 
 ## Waves
 
 | Ola | Foco | Estado |
 |-----|------|--------|
-| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS: E1 AGENTS.md falso → saldada ola 2; E2 humo UI navegador → saldada 2026-08-28, attest V) |
-| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 (APPROVED WITH EXCEPTIONS; build+tests OK, humo e2e OK, humo UI navegador OK — attest V) |
-| 3 | Confianza de identidad: validación CURP/correo/teléfono (WhatsApp Cloud API), KYC/OCR real (subida), score alternativo por recibos, contrato PDF | [ ] |
-| 4 | Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
-| 5 | Dinero: suscripción Stripe (Billing) + dashboard de métricas de impacto | [ ] |
-| 6 | Ecosistema: roles inversionista/soporte, buró CdC (sandbox), open banking; cobranza como producto separado | [ ] |
+| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS; E1 saldada ola 2, E2 saldada 2026-08-28) |
+| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 (APPROVED WITH EXCEPTIONS; E1/E2 resueltas, attest V) |
+| 3 | Identidad verificable: CURP robusta (dígito verificador), correo del cliente, verificación por teléfono OTP (WhatsApp Cloud API, mock en dev) | [x] planificada (EN CURSO) |
+| 4 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
+| 5 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
+| 6 | Dinero (Stripe) + Ecosistema: roles inversionista/soporte, buró CdC (sandbox), open banking; cobranza como producto separado | [ ] |
+
+> Nota de re-segmentación (decision log 2026-08-28): la ola 3 original agrupaba
+> 4 features grandes que colisionaban en `main.rs`/`Cargo.toml`/`models/cliente.rs`;
+> se repartieron en olas 3 y 4 para mantener el paralelismo con archivos disjuntos.
 
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
 > Actualizar después de cada paso, quien lo ejecute.
 
 ---
 
-## Ola 2 (actual): portal público — la primera impresión vende
+## Ola 3 (actual): identidad verificable
 
-Contexto: la ola 1 dejó auth real (JWT, tenant = correo), frontend partido en
-módulos (`main.rs` 102 líneas, `api.rs`, `components/*`) y docs inconsistentes
-(E1). El problema de producto: al abrir la app el visitante ve una "caja fuerte
-con contraseña"; el registro existe pero es invisible como invitación (form
-embebido al fondo del Login, decision log 2026-08-13). Un B2B necesita vender
-en la primera impresión. Esto desbloquea la ola 3+: todo lo que viene presume
-que la empresa se registra sola y entra directo.
+Contexto: el alta de cliente valida CURP solo por formato (largo y patrones),
+no por dígito verificador; no pide correo; y el teléfono se captura sin
+verificar que sea del cliente real. La idea (PYMZA.md) pide redundancia:
+CURP real, teléfono con código, correo real. Esta ola hace la verificación
+fuerte por **teléfono + código OTP** (WhatsApp Cloud API; mock en dev que
+imprime el código en el log del backend), la **CURP con dígito verificador**,
+y añade el **correo del cliente** (campo + formato; el envío de código por
+correo queda diferido, ponytail: ver decision log).
 
-### Comportamiento esperado (ambos executors implementan contra ESTO)
+### Contrato API ola 3 (ambos executors implementan contra ESTO)
 
-- **Sin autenticación** → se ve la **landing** (venta, no login): hero con el
-  pitch ("Crédito con cobranza respaldada para tu negocio"), beneficios (score
-  con datos alternativos, red de alerta temprana, planes de pago estructurados,
-  cartera + dashboard), CTAs "Crear cuenta" e "Iniciar sesión".
-- **Registro** = vista propia → form nombre/correo/password ≥8 → `POST
-  /api/empresas` → al éxito **auto-login** (`POST /api/login` con las mismas
-  credenciales) → entra directo a la app. Enlace cruzado con Login.
-- **Login** = solo correo+password; enlace "¿No tienes cuenta? Regístrate".
-- **Tema claro/oscuro**: dark por defecto (look actual); toggle 🌙/☀️ en
-  sidebar y landing alternando la clase `dark` en `<html>`, persistido en
-  localStorage (`pymza_theme`). Migrar componentes a pares base-light +
-  `dark:` (Tailwind v4: `@custom-variant dark` en `tailwind.css`). Regenerar y
-  commitear `assets/tailwind.css`.
-- **`API_BASE` configurable**: `option_env!("API_BASE").unwrap_or("http://127.0.0.1:3000")` — default dev; el build/deploy inyecta la URL real (ola 4, Railway).
-- Backend: **cero cambios** (el auto-login usa endpoints existentes).
+- `Cliente` gana dos campos:
+  - `correo: Option<String>` (opcional; formato validado con `es_correo_valido`).
+  - `telefono_verificado: bool` (default `false`).
+  - `CrearClienteReq` gana `correo: Option<String>`.
+- `POST /api/clientes` (protegido): crea el cliente con `telefono_verificado:
+  false`; valida CURP robusta (formato + dígito verificador + coherencia
+  fecha/sexo/entidad) y correo si viene.
+- Nuevo módulo `backend/src/routes/verificacion.rs` (2 rutas protegidas):
+  - `POST /api/verificaciones/solicitar` — body `{ curp, telefono }`: genera
+    código de 6 dígitos, expira en 10 min, guarda el desafío en colección
+    `verificaciones` (SOLO el hash del código, nunca en claro), lo envía por
+    el `OtpSender` activo. Respuesta `{status: "success"}`. El mock imprime
+    el código en el log del backend (para el flujo de dev).
+  - `POST /api/verificaciones/confirmar` — body `{ curp, telefono, codigo }`:
+    valida contra el desafío vigente (no expirado), marca
+    `telefono_verificado = true` en el cliente de esa CURP, borra el desafío.
+    Errores: 400 código inválido/expirado, 404 sin desafío o cliente inexistente.
+- `OtpSender`: trait con dos impls — `MockOtpSender` (default, imprime el
+  código en el log) y `WhatsAppOtpSender` (llama a la WhatsApp Cloud API de
+  Meta si `WHATSAPP_TOKEN` y `WHATSAPP_PHONE_NUMBER_ID` existen en env; usa
+  `reqwest`). Selector en `main.rs` por env. Cero secretos en el repo.
+- `backend/src/otp.rs`: generación de código, hash, expiración, trait e impls.
+- Deps nuevas backend (justificadas): `reqwest` (llamar WhatsApp API),
+  `rand` (código), `sha2` (hash del código). Ninguna otra.
+- Frontend `alta_cliente.rs`: tras dar de alta un cliente, sección "Verificar
+  teléfono" — botón "Enviar código" → input de 6 dígitos → "Confirmar" →
+  badge "✓ Verificado". En el resultado de búsqueda por CURP, mostrar badge
+  si `telefono_verificado` es true. `api.rs`: helpers
+  `solicitar_verificacion` y `confirmar_verificacion`.
+- Backend: **cero cambios** en el resto de rutas/contratos existentes.
 
 ### Mapa de propiedad de archivos
 
 | Archivo/glob | Dueño |
 |-----------|-------|
-| `frontend/src/**`, `frontend/tailwind.css`, `frontend/assets/tailwind.css` | executor-1 |
-| `AGENTS.md` (raíz), `README.md`, `docs/ROADMAP.md`, `docs/API.md` | executor-2 |
+| `backend/Cargo.toml`, `backend/src/**`, `backend/scripts/**`, `docs/API.md`, `.env.example` | executor-1 |
+| `frontend/src/**`, `frontend/tailwind.css`, `frontend/assets/tailwind.css` | executor-2 |
 
-Fuera de ambos (nadie toca): `backend/**`, `frontend/tailwind.sh`,
-`frontend/Dioxus.toml`, `frontend/AGENTS.md` (referencia Dioxus),
-`docs/INVESTIGACION.md`, `PYMZA.md`, `docker-compose.yml`, `Dockerfile.*`,
-`.workflow/**`, `skills/**`, `backend/.env` (secreto).
+Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/Dioxus.toml`,
+`frontend/AGENTS.md` (referencia Dioxus), `frontend/Cargo.toml` (cero deps),
+`AGENTS.md` (raíz), `README.md`, `docs/ROADMAP.md`, `docs/INVESTIGACION.md`,
+`PYMZA.md`, `docker-compose.yml`, `Dockerfile.*`, `.workflow/**`,
+`skills/**`, `backend/.env` (secreto).
 
 ### Tareas
 
-- [ ] T1 (executor-1): landing + registro/login separados con CTA + tema claro/oscuro + `API_BASE` configurable → brief: `.workflow/briefs/wave2-executor-1.md`
-- [ ] T2 (executor-2): refrescar `AGENTS.md` (E1), `README.md`, `docs/ROADMAP.md`, `docs/API.md` al estado real post-ola 1 → brief: `.workflow/briefs/wave2-executor-2.md`
+- [ ] T1 (executor-1): CURP robusta + correo del cliente + OTP teléfono (WhatsApp/mock) → brief: `.workflow/briefs/wave3-executor-1.md`
+- [ ] T2 (executor-2): flujo de verificación de teléfono en alta de cliente + badges → brief: `.workflow/briefs/wave3-executor-2.md`
 
 ### Plan de integración
 
-Merges en orden (integrador): **executor-1 (frontend) → executor-2 (docs)** —
-archivos disjuntos, sin conflictos esperados.
+Merges en orden (integrador): **executor-1 (backend) → executor-2 (frontend)**.
 
 ```bash
 # 1. Build + tests sobre el árbol integrado
-cd backend && cargo build && cargo test    # inalterado; assurance
-cd frontend && cargo check --target wasm32-unknown-unknown && cargo test && ./tailwind.sh
+cd backend && cargo build && cargo test
+cd frontend && cargo check --target wasm32-unknown-unknown && cargo test
 
 # 2. Humo e2e (backend contra Atlas: cd backend && cargo run)
-#    Empresa demo: las del humano (p.ej. nueva@empresa.mx / nueva123; JWT_SECRET ya en .env)
 TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/login \
   -H 'content-type: application/json' \
   -d '{"correo":"nueva@empresa.mx","password":"nueva123"}' | jq -r .token)
-test "$TOKEN" != "null" && test -n "$TOKEN"
-curl -s http://127.0.0.1:3000/api/dashboard -H "Authorization: Bearer $TOKEN" | jq .stats.empresa
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/api/dashboard   # → 401
+# alta de cliente de prueba (CURP con dígito verificador válido)
+CURP="GACM940101HDFRRR07"
+curl -s -X POST http://127.0.0.1:3000/api/clientes -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d "{\"curp\":\"$CURP\",\"nombre_completo\":\"Prueba OTP\",\"direccion\":\"X\",\"telefono\":\"5512345678\",\"correo\":\"prueba@correo.mx\"}" | jq .
+# solicitar código → buscar el código en el LOG del backend (mock)
+curl -s -X POST http://127.0.0.1:3000/api/verificaciones/solicitar -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d "{\"curp\":\"$CURP\",\"telefono\":\"5512345678\"}" | jq .
+# confirmar con el código del log
+curl -s -X POST http://127.0.0.1:3000/api/verificaciones/confirmar -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' -d "{\"curp\":\"$CURP\",\"telefono\":\"5512345678\",\"codigo\":\"<del-log>\"}" | jq .
+# GET /api/clientes/$CURP → telefono_verificado: true
+curl -s http://127.0.0.1:3000/api/clientes/$CURP -H "Authorization: Bearer $TOKEN" | jq .
 
-# 3. Humo UI (navegador, humano — salda E2 ola 1): cd frontend && dx serve
-#    - Sin login: LANDING visible
-#    - "Crear cuenta" → Registro → crear empresa de prueba → entra a la app (auto-login)
-#    - Logout → Landing/Login; login con la empresa creada → app
-#    - Toggle tema: paleta cambia; recarga → se conserva
-#    - Flujo completo: alta cliente → evaluar → autorizar → dashboard/cartera
+# 3. Humo UI (navegador, humano): alta cliente → enviar código → confirmar →
+#    badge verificado; búsqueda muestra badge.
 ```
 
-Si el humo UI pasa, la excepción E2 de la ola 1 queda saldada. El integrador
-actualiza los estados de la tabla de olas.
+Integrador actualiza los estados de la tabla de olas tras cada paso.
 
 ### Audit gate
 
 El auditor corre `.workflow/audit-checklist.md` sobre el árbol integrado y
 además verifica (evidencia = salida de comandos):
 
-- En vivo sin auth: `/` muestra landing, no login.
-- Registro crea empresa real en Atlas + auto-login funciona (verificado en vivo).
-- `rg "token-temporal-123" frontend/ backend/ AGENTS.md README.md docs/` → 0 hits (E1 saldada).
-- `rg ":empresa" frontend/ backend/ AGENTS.md README.md docs/` → 0 (rutas viejas muertas).
-- `rg "dark:" frontend/src/` → migración presente; `git diff` de `frontend/assets/tailwind.css` lo refleja (CSS regenerado y commiteado).
-- `rg "option_env!\(\"API_BASE\"\)" frontend/src/` → presente.
+- CURP robusta: `cargo test` incluye casos con dígito verificador inválido
+  (formato OK pero dígito malo → rechazada).
+- El código OTP NUNCA se guarda en claro: `rg "codigo_hash" backend/src/`
+  presente; la colección `verificaciones` solo tiene hash (verificado en vivo
+  con `mongosh` o log).
+- Sin token → 401 en `solicitar`/`confirmar` (curl).
+- Con token pero código inválido/expirado → 400; sin desafío → 404.
+- `telefono_verificado` persiste en el cliente tras confirmar (curl GET).
+- Cero secretos commiteados (`rg "WHATSAPP_" AGENTS.md README.md docs/ backend/src/`
+  → solo `.env.example` con placeholder vacío).
+- Patrón exacto de rutas viejas (aprendizaje ola 2: NO usar `:empresa` suelto,
+  usar `/api/creditos/:empresa` literal): 0 hits en `backend/src/`.
 - Nada fuera del mapa de propiedad modificado (`git log --stat` por rama).
-- Resultado en `.workflow/audits/wave2.md`.
+- Resultado en `.workflow/audits/wave3.md`.
 
 ---
 
 ## Decision log
 
-Ola 1 (contexto histórico; detalle en `.workflow/audits/wave1.md`):
+Olas 1–2 (contexto histórico; detalle en `.workflow/audits/wave1.md` y
+`wave2.md`):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
-| 2026-08-13 | Tenant key = `correo` de empresa, no ObjectId nuevo | Ya es único y validado; evita ids nuevos y joins. Docs existentes se migran con script |
+| 2026-08-13 | Tenant key = `correo` de empresa, no ObjectId nuevo | Ya es único y validado; docs existentes se migran con script |
 | 2026-08-13 | JWT HS256 (`jsonwebtoken` v9), secret por env, exp 24h | Lo mínimo que funciona; techo: refresh tokens + httpOnly cookies |
-| 2026-08-13 | Frontend se parte en módulos ANTES del portal (ola 2) | El monolito de 1025 líneas impide trabajo paralelo de executors |
-| 2026-08-13 | Contrato API fijado en el plan; executors codifican contra él | Permite backend y frontend en paralelo en la misma ola |
 | 2026-08-13 | App de cobradores y Tauri fuera de este plan | Productos separados; dependen de que la red esté viva |
-| 2026-08-13 | Trabajar contra MongoDB Atlas real (solo datos de prueba) | Aprobado por el usuario; simplifica humos de integración |
 | 2026-08-13 | OTP por WhatsApp: proveedor objetivo = WhatsApp Cloud API (Meta); n8n se reserva para cobranza (ola 6+) | Para un código de 6 dígitos, llamada directa del backend al proveedor es lo mínimo que funciona |
-| 2026-08-13 | Stripe y CdC: el usuario creará cuentas cuando la ola las pida (5 y 6) | Confirmado por el usuario, presupuesto disponible |
-| 2026-08-17 | Humo ola 1 completado tras fix humano del `.env` (JWT_SECRET duplicado, línea vacía ganaba). Aprendizaje: el comando `jq .empresa` del plan lee raíz, pero el schema real entrega `stats.empresa` — corregido en ola 2 | El integrador nunca toca secretos; se detiene y reporta |
+| 2026-08-17 | Humo ola 1: el schema real entrega `stats.empresa`, no `empresa` | Corregido el comando del plan en olas siguientes |
+| 2026-08-17 | VistaPública sin router en la ola 2 | 3 vistas no justifican router; techo: router cuando existan URLs públicas reales (ola 5) |
+| 2026-08-17 | Auto-login tras registro exitoso | Contratar sin fricción: alta + sesión directa |
+| 2026-08-17 | Default tema = dark; light opt-in | Minimiza el cambio visual de golpe |
+| 2026-08-17 | `API_BASE` vía `option_env!` con default dev | Configurable en build/deploy sin tocar código |
+| 2026-08-28 | E1 (AGENTS.md falso) y E2 (humo UI) de la ola 2 resueltas: stash aplicado (`f352e38`), attest navegador de V | Árbol sin stashes, E2 heredada de ola 1 saldada |
 
-Ola 2 (nuevas):
+Ola 3 (nuevas):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
-| 2026-08-17 | VistaPública (Landing/Login/Registro) sin router en main.rs | 3 vistas no justifican router; techo: router cuando existan URLs públicas reales (revisitarlo con el portal desplegado, ola 4) |
-| 2026-08-17 | Auto-login tras registro exitoso | Contratar sin fricción: alta + sesión directa; el login sigue disponible en logout |
-| 2026-08-17 | Default tema = dark (look actual); light opt-in | Minimiza el cambio visual de golpe; el toggle persiste la preferencia |
-| 2026-08-17 | `API_BASE` vía `option_env!` con default dev | Configurable en build/deploy sin tocar código (Railway inyectará la URL real en la ola 4); techo: config runtime si se sirve desde otro origen |
-| 2026-08-17 | E1 (AGENTS.md falso) resuelta como executor de docs en la ola 2 | La auditoría la marcó con owner "planner ola 2"; docs = zona disjunta que da paralelismo al frontend |
-| 2026-08-17 | Backend no cambia en la ola 2 | El auto-login y la landing no requieren endpoints nuevos; menos riesgo, menos diff |
-| 2026-08-28 | Excepciones de la ola 2 saldadas con autorización de V: stash "not-paid" aplicado a `docs/ROADMAP.md` (commit f352e38) y humo UI OK | V attesta: "hasta ahora veo perfectamente la página web" → E2 de la ola 1 queda saldada; árbol sin stashes. Cierre auditable de ambas excepciones de `audits/wave2.md` |
+| 2026-08-28 | Re-segmentación: ola 3 = identidad (CURP+correo+OTP); ola 4 = KYC/OCR + score por recibos; ola 5 = contrato PDF + producción | Las 4 features originales de la "ola 3" colisionaban en `main.rs`/`Cargo.toml`/`models/cliente.rs`; partidas, cada ola mantiene 2 executors con archivos disjuntos |
+| 2026-08-28 | Código OTP: 6 dígitos, hash SHA-256 en DB (nunca en claro), expira en 10 min, ligado a `curp+telefono` | El desafío verifica que el teléfono pertenece al cliente que se da de alta; hash protege la DB si se filtra |
+| 2026-08-28 | `OtpSender` trait: `MockOtpSender` (default, código en log) y `WhatsAppOtpSender` (env `WHATSAPP_TOKEN`+`WHATSAPP_PHONE_NUMBER_ID`) | Dev sin credenciales funciona; producción solo activa WhatsApp con env. Cero secretos en repo |
+| 2026-08-28 | Correo del cliente: campo + formato ahora; envío de código por correo diferido | El OTP por WhatsApp es la verificación fuerte; el correo con código exige SMTP — se añade cuando haya un proveedor (ponytail: techo nombrado) |
+| 2026-08-28 | Deps nuevas backend permitidas: `reqwest`, `rand`, `sha2` | Las tres cubren el OTP (HTTP al proveedor, código, hash); ninguna otra |
