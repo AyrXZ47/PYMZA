@@ -212,6 +212,44 @@ pub struct PagoInfo {
     pub saldo_restante: f64,
 }
 
+// --- Verificación de teléfono por OTP (contrato API ola 3). ---
+
+/// Request a `POST /api/verificaciones/solicitar`: pide un código de 6 dígitos
+/// para `{ curp, telefono }` (WhatsApp; en dev el backend lo imprime en su log).
+pub fn solicitar_verificacion(curp: &str, telefono: &str, token: &str) -> reqwest::RequestBuilder {
+    authed_request(
+        reqwest::Method::POST,
+        "/api/verificaciones/solicitar".to_string(),
+        token,
+    )
+    .json(&serde_json::json!({ "curp": curp, "telefono": telefono }))
+}
+
+/// Request a `POST /api/verificaciones/confirmar`: valida `codigo` contra el
+/// desafío vigente; el backend marca `telefono_verificado = true`.
+pub fn confirmar_verificacion(
+    curp: &str,
+    telefono: &str,
+    codigo: &str,
+    token: &str,
+) -> reqwest::RequestBuilder {
+    authed_request(
+        reqwest::Method::POST,
+        "/api/verificaciones/confirmar".to_string(),
+        token,
+    )
+    .json(&serde_json::json!({ "curp": curp, "telefono": telefono, "codigo": codigo }))
+}
+
+/// ¿El cliente ya tiene el teléfono verificado? Clientes anteriores a la ola 3
+/// no traen el campo → no verificado.
+pub fn telefono_verificado(cliente: &serde_json::Value) -> bool {
+    cliente
+        .get("telefono_verificado")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Extrae la alerta de morosidad de un cliente de la red (motivo, empresa).
 pub fn alerta_info(cliente: &serde_json::Value) -> Option<(String, String)> {
     let alerta = cliente.get("alerta")?.as_object()?;
@@ -319,5 +357,40 @@ mod tests {
             theme_class_js("light"),
             "document.documentElement.classList.toggle('dark', false);"
         );
+    }
+
+    #[test]
+    fn solicitar_verificacion_construye_post_con_curp_y_telefono() {
+        let request = solicitar_verificacion("GACM940101HDFRRR07", "5512345678", "tok")
+            .build()
+            .unwrap();
+        assert_eq!(*request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/api/verificaciones/solicitar");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "curp": "GACM940101HDFRRR07", "telefono": "5512345678" })
+        );
+        assert!(body.get("codigo").is_none());
+    }
+
+    #[test]
+    fn confirmar_verificacion_incluye_codigo_en_el_body() {
+        let request = confirmar_verificacion("GACM940101HDFRRR07", "5512345678", "654321", "tok")
+            .build()
+            .unwrap();
+        assert_eq!(request.url().path(), "/api/verificaciones/confirmar");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["codigo"], "654321");
+    }
+
+    #[test]
+    fn telefono_verificado_true_solo_con_el_campo_en_true() {
+        assert!(telefono_verificado(&serde_json::json!({ "telefono_verificado": true })));
+        assert!(!telefono_verificado(&serde_json::json!({ "telefono_verificado": false })));
+        // cliente de antes de la ola 3: sin el campo → no verificado
+        assert!(!telefono_verificado(&serde_json::json!({ "curp": "GACM940101HDFRRR07" })));
     }
 }
