@@ -40,7 +40,7 @@ Constraints:
 |-----|------|--------|
 | 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS; E1 saldada ola 2, E2 saldada 2026-08-28) |
 | 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 (APPROVED WITH EXCEPTIONS; E1/E2 resueltas, attest V) |
-| 3 | Identidad verificable: CURP robusta (dígito verificador), correo del cliente, verificación por teléfono OTP (WhatsApp Cloud API, mock en dev) | [x] planificada (EN CURSO) |
+| 3 | Identidad verificable: CURP robusta (dígito verificador), correo del cliente, verificación por teléfono OTP (WhatsApp Cloud API, mock en dev) | [x] integrada 2026-08-31 (build+tests verdes 32+14, humo e2e OK) — pendiente auditoría |
 | 4 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
 | 5 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 6 | Dinero (Stripe) + Ecosistema: roles inversionista/soporte, buró CdC (sandbox), open banking; cobranza como producto separado | [ ] |
@@ -113,8 +113,8 @@ Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/Dioxus.toml`,
 
 ### Tareas
 
-- [ ] T1 (executor-1): CURP robusta + correo del cliente + OTP teléfono (WhatsApp/mock) → brief: `.workflow/briefs/wave3-executor-1.md`
-- [ ] T2 (executor-2): flujo de verificación de teléfono en alta de cliente + badges → brief: `.workflow/briefs/wave3-executor-2.md`
+- [x] T1 (executor-1): CURP robusta + correo del cliente + OTP teléfono (WhatsApp/mock) → brief: `.workflow/briefs/wave3-executor-1.md`
+- [x] T2 (executor-2): flujo de verificación de teléfono en alta de cliente + badges → brief: `.workflow/briefs/wave3-executor-2.md`
 
 ### Plan de integración
 
@@ -198,3 +198,4 @@ Ola 3 (nuevas):
 | 2026-08-28 | `OtpSender` trait: `MockOtpSender` (default, código en log) y `WhatsAppOtpSender` (env `WHATSAPP_TOKEN`+`WHATSAPP_PHONE_NUMBER_ID`) | Dev sin credenciales funciona; producción solo activa WhatsApp con env. Cero secretos en repo |
 | 2026-08-28 | Correo del cliente: campo + formato ahora; envío de código por correo diferido | El OTP por WhatsApp es la verificación fuerte; el correo con código exige SMTP — se añade cuando haya un proveedor (ponytail: techo nombrado) |
 | 2026-08-28 | Deps nuevas backend permitidas: `reqwest`, `rand`, `sha2` | Las tres cubren el OTP (HTTP al proveedor, código, hash); ninguna otra |
+| 2026-08-31 | Integración ola 3: la CURP de ejemplo del plan (`GACM940101HDFRRR07`) NO pasa el dígito verificador; usar CURPs del seed (`RAMJ920215MDFMZR05`, etc.) | El ejemplo se escribió antes de implementar el verificador; los tests cubren ambas vías |
