@@ -121,16 +121,22 @@ Busca un cliente existente en la red PYMZA por su CURP.
 {
   "status": "success",
   "cliente": {
-    "curp": "GARM980412HDFNRL08",
+    "curp": "GARM980412HDFNRL05",
     "nombre_completo": "María García Rodríguez",
     "score": 550,
     "nivel_riesgo": "Medio",
     "historial_pagos": "Sin historial en la red",
     "direccion": "Calle 5 de Mayo 123, CDMX",
-    "telefono": "5512345678"
+    "telefono": "5512345678",
+    "correo": "maria@correo.mx",
+    "telefono_verificado": false
   }
 }
 ```
+
+`telefono_verificado` siempre se devuelve (`false` para clientes dados de alta
+antes de la verificación por OTP, o aún sin verificar). `correo` solo aparece
+si el cliente tiene uno.
 
 **Respuesta (no existe):**
 ```json
@@ -146,37 +152,48 @@ Busca un cliente existente en la red PYMZA por su CURP.
 
 ## POST `/api/clientes` — protegida
 
-Alta de un cliente nuevo. Valida el formato de CURP (18 caracteres alfanuméricos) y evita duplicados. El score base es `550` y el nivel de riesgo `"Medio"`.
+Alta de un cliente nuevo. Valida la CURP de forma robusta: 18 caracteres con
+estructura CURP (mayúsculas/dígitos, fecha coherente con el calendario
+—incluidos años bisiestos—, sexo, entidad federativa) y **dígito verificador
+oficial** (Instructivo RENAPO, DOF 18-10-2021). Evita duplicados. Si viene
+`correo`, valida su formato. El score base es `550`, el nivel de riesgo
+`"Medio"` y el cliente se crea siempre con `telefono_verificado: false`
+(la verificación se hace después por OTP; ver `/api/verificaciones`).
 
 **Requiere:** `Authorization: Bearer <token>`
 
 **Payload:**
 ```json
 {
-  "curp": "GARM980412HDFNRL08",
+  "curp": "GARM980412HDFNRL05",
   "nombre_completo": "María García Rodríguez",
   "direccion": "Calle 5 de Mayo 123, CDMX",
-  "telefono": "5512345678"
+  "telefono": "5512345678",
+  "correo": "maria@correo.mx"
 }
 ```
+
+`correo` es opcional; si no viene, omítelo o mándalo `null`.
 
 **Respuesta (éxito):**
 ```json
 {
   "status": "success",
   "cliente": {
-    "curp": "GARM980412HDFNRL08",
+    "curp": "GARM980412HDFNRL05",
     "nombre_completo": "María García Rodríguez",
     "score": 550,
     "nivel_riesgo": "Medio",
     "historial_pagos": "Sin historial en la red",
     "direccion": "Calle 5 de Mayo 123, CDMX",
-    "telefono": "5512345678"
+    "telefono": "5512345678",
+    "telefono_verificado": false
   }
 }
 ```
 
-**Respuestas (error):** CURP inválida / duplicado (mensajes descriptivos), `401` sin token.
+**Respuestas (error):** CURP inválida (formato o dígito verificador) / correo
+inválido / duplicado (mensajes descriptivos), `401` sin token.
 
 **Colección Mongo:** `clientes` (inserta).
 
