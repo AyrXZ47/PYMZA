@@ -3,7 +3,10 @@
 
 use dioxus::prelude::*;
 
-use crate::api::{alerta_info, authed_request, sesion_ok};
+use crate::api::{
+    alerta_info, authed_request, confirmar_verificacion, sesion_ok, solicitar_verificacion,
+    telefono_verificado,
+};
 use crate::components::plan_modal::PlanModal;
 
 #[component]
@@ -17,6 +20,27 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
     let mut alta_nombre = use_signal(|| String::new());
     let mut alta_direccion = use_signal(|| String::new());
     let mut alta_telefono = use_signal(|| String::new());
+    let mut alta_correo = use_signal(|| String::new());
+
+    // Verificación de teléfono por OTP (contrato ola 3).
+    let mut ver_tel = use_signal(|| String::new());
+    let mut ver_codigo = use_signal(|| String::new());
+    let mut ver_enviado = use_signal(|| false);
+    let mut ver_ocupado = use_signal(|| false);
+    let mut ver_error = use_signal(|| None::<String>);
+    let mut verificado = use_signal(|| false);
+
+    // Al cargar/cambiar el cliente en el panel: prellenar el teléfono y
+    // reiniciar el flujo OTP.
+    use_effect(move || {
+        if let Some(cliente) = search_result() {
+            ver_tel.set(cliente["telefono"].as_str().unwrap_or("").to_string());
+            verificado.set(telefono_verificado(&cliente));
+            ver_codigo.set(String::new());
+            ver_enviado.set(false);
+            ver_error.set(None);
+        }
+    });
 
     let status = search_status();
     rsx! {
@@ -105,6 +129,117 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
                             div { class: "text-slate-900 font-medium dark:text-white", "{cliente[\"nivel_riesgo\"].as_str().unwrap_or(\"—\")}" }
                         }
                     }
+                    if verificado() {
+                        div { class: "mt-6 flex items-center gap-2",
+                            span { class: "text-sm font-semibold text-green-700 dark:text-green-400", "✓ Verificado" }
+                        }
+                    } else {
+                        div { class: "mt-6 pt-4 border-t border-slate-200 dark:border-slate-700",
+                            div { class: "text-slate-900 font-medium dark:text-white mb-2", "Verificar teléfono" }
+                            if let Some(msg) = ver_error() {
+                                p { class: "text-red-500 text-sm mb-2", "{msg}" }
+                            }
+                            div { class: "flex flex-col gap-4",
+                                input {
+                                    class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
+                                    placeholder: "Teléfono",
+                                    value: ver_tel(),
+                                    oninput: move |e| {
+                                        ver_tel.set(e.value());
+                                        if ver_enviado() {
+                                            // el desafío va ligado a curp+telefono:
+                                            // si cambia el teléfono, código nuevo
+                                            ver_enviado.set(false);
+                                            ver_error.set(None);
+                                        }
+                                    },
+                                }
+                                if ver_enviado() {
+                                    input {
+                                        class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
+                                        placeholder: "Código de 6 dígitos",
+                                        maxlength: 6,
+                                        value: ver_codigo(),
+                                        oninput: move |e| ver_codigo.set(e.value()),
+                                    }
+                                    p { class: "text-xs text-slate-500 dark:text-slate-400", "Revisa tu WhatsApp — en dev el código aparece en el log del backend" }
+                                }
+                                button {
+                                    class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-2 rounded-lg",
+                                    disabled: ver_ocupado(),
+                                    onclick: move |_| {
+                                        let curp_cliente = cliente["curp"].as_str().unwrap_or("").to_string();
+                                        let token_val = token();
+                                        ver_error.set(None);
+                                        if ver_enviado() {
+                                            let tel = ver_tel();
+                                            let codigo = ver_codigo();
+                                            ver_ocupado.set(true);
+                                            spawn(async move {
+                                                match confirmar_verificacion(&curp_cliente, &tel, &codigo, &token_val).send().await {
+                                                    Ok(res) => {
+                                                        if sesion_ok(&res, is_authenticated, token) {
+                                                            match res.json::<serde_json::Value>().await {
+                                                                Ok(data) => {
+                                                                    if data["status"] == "success" {
+                                                                        verificado.set(true);
+                                                                        ver_enviado.set(false);
+                                                                        ver_codigo.set(String::new());
+                                                                    } else {
+                                                                        ver_error.set(Some(data["message"].as_str().unwrap_or("Código inválido o expirado").to_string()));
+                                                                    }
+                                                                }
+                                                                Err(_) => {
+                                                                    ver_error.set(Some("Error al procesar respuesta".to_string()));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(_) => {
+                                                        ver_error.set(Some("Error de conexión con el servidor".to_string()));
+                                                    }
+                                                }
+                                                ver_ocupado.set(false);
+                                            });
+                                        } else {
+                                            let tel = ver_tel();
+                                            ver_ocupado.set(true);
+                                            spawn(async move {
+                                                match solicitar_verificacion(&curp_cliente, &tel, &token_val).send().await {
+                                                    Ok(res) => {
+                                                        if sesion_ok(&res, is_authenticated, token) {
+                                                            match res.json::<serde_json::Value>().await {
+                                                                Ok(data) => {
+                                                                    if data["status"] == "success" {
+                                                                        ver_enviado.set(true);
+                                                                    } else {
+                                                                        ver_error.set(Some(data["message"].as_str().unwrap_or("No se pudo enviar el código").to_string()));
+                                                                    }
+                                                                }
+                                                                Err(_) => {
+                                                                    ver_error.set(Some("Error al procesar respuesta".to_string()));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(_) => {
+                                                        ver_error.set(Some("Error de conexión con el servidor".to_string()));
+                                                    }
+                                                }
+                                                ver_ocupado.set(false);
+                                            });
+                                        }
+                                    },
+                                    {match (ver_ocupado(), ver_enviado()) {
+                                        (true, false) => "Enviando...",
+                                        (true, true) => "Confirmando...",
+                                        (false, true) => "Confirmar",
+                                        (false, false) => "Enviar código",
+                                    }}
+                                }
+                            }
+                        }
+                    }
                     button {
                         class: "mt-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-3 rounded-lg",
                         onclick: move |_| show_plan_modal.set(true),
@@ -135,6 +270,12 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
                                 value: alta_telefono(),
                                 oninput: move |e| alta_telefono.set(e.value()),
                             }
+                            input {
+                                class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
+                                placeholder: "Correo (opcional)",
+                                value: alta_correo(),
+                                oninput: move |e| alta_correo.set(e.value()),
+                            }
                             button {
                                 class: "bg-green-600 hover:bg-green-700 text-white font-semibold px-6 py-3 rounded-lg",
                                 onclick: move |_| {
@@ -142,13 +283,20 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
                                     let nombre = alta_nombre();
                                     let direccion = alta_direccion();
                                     let telefono = alta_telefono();
+                                    let correo = alta_correo();
                                     let token_val = token();
                                     spawn(async move {
+                                        let correo_enviar: Option<String> = if correo.is_empty() {
+                                            None
+                                        } else {
+                                            Some(correo)
+                                        };
                                         let body = serde_json::json!({
                                             "curp": curp,
                                             "nombre_completo": nombre,
                                             "direccion": direccion,
                                             "telefono": telefono,
+                                            "correo": correo_enviar,
                                         });
                                         match authed_request(reqwest::Method::POST, "/api/clientes".to_string(), &token_val)
                                             .json(&body)
@@ -165,6 +313,7 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
                                                                     alta_nombre.set(String::new());
                                                                     alta_direccion.set(String::new());
                                                                     alta_telefono.set(String::new());
+                                                                    alta_correo.set(String::new());
                                                                     search_status.set(String::new());
                                                                 }
                                                             } else {
