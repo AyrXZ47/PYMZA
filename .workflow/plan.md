@@ -40,7 +40,7 @@ Constraints:
 |-----|------|--------|
 | 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS; E1 saldada ola 2, E2 saldada 2026-08-28) |
 | 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 (APPROVED WITH EXCEPTIONS; E1/E2 resueltas, attest V) |
-| 3 | Identidad verificable: CURP robusta (dígito verificador), correo del cliente, verificación por teléfono OTP (WhatsApp Cloud API, mock en dev) | [x] integrada 2026-08-31 (build+tests verdes 32+14, humo e2e OK) — pendiente auditoría |
+| 3 | Identidad verificable: CURP robusta (dígito verificador), correo del cliente, verificación por teléfono OTP (WhatsApp Cloud API, mock en dev) | [x] auditada 2026-08-31 (APPROVED; dv verificado vs DOF, hash OTP en vivo; O1-O4 no bloqueantes en `.workflow/audits/wave3.md`) |
 | 4 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
 | 5 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 6 | Dinero (Stripe) + Ecosistema: roles inversionista/soporte, buró CdC (sandbox), open banking; cobranza como producto separado | [ ] |
