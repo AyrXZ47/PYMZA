@@ -22,99 +22,123 @@ de crédito esté viva. Tauri/escritorio: el producto es web primero.
 | Capa | Tech |
 |---|---|
 | Frontend | Dioxus 0.7.9 (pin `=0.7.9`) Rust → WASM + Tailwind v4. `frontend/AGENTS.md` es la referencia API obligatoria |
-| Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs` (JWT HS256) |
-| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats` (+ `verificaciones` desde ola 3) |
-| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 5) |
+| Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs` (JWT HS256), `otp.rs` |
+| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones` (+ `pagos` desde ola 4) |
+| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 6) |
 
 Constraints:
-- Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC) solo en `.env` local.
+- Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC, KYC) solo en `.env` local.
 - `Cargo.lock` gitignored (root `.gitignore`) — normal al añadir deps.
 - NixOS: `dx` no compila Tailwind; el CSS compilado (`frontend/assets/tailwind.css`) está commiteado. Si una ola cambia clases Tailwind, regenerar con `frontend/tailwind.sh` y commitear el CSS.
 - Sin CI. Verificación disponible: `cargo test` (backend y frontend nativo) + `cargo check --target wasm32-unknown-unknown` (frontend WASM).
 - Backend necesita librerías dev de OpenSSL para compilar (driver mongodb con `openssl-tls`).
-- Release gate (ola 5): `skills/security-audit` con cero CRITICAL/HIGH antes de producción.
+- Release gate (ola 6): `skills/security-audit` con cero CRITICAL/HIGH antes de producción.
 
 ## Waves
 
 | Ola | Foco | Estado |
 |-----|------|--------|
-| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 (APPROVED WITH EXCEPTIONS; E1 saldada ola 2, E2 saldada 2026-08-28) |
-| 2 | Portal público: landing que venda, registro/login separados con CTA, modo claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 (APPROVED WITH EXCEPTIONS; E1/E2 resueltas, attest V) |
-| 3 | Identidad verificable: CURP robusta (dígito verificador), correo del cliente, verificación por teléfono OTP (WhatsApp Cloud API, mock en dev) | [x] auditada 2026-08-31 (APPROVED; dv verificado vs DOF, hash OTP en vivo; O1-O4 no bloqueantes en `.workflow/audits/wave3.md`) |
-| 4 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
-| 5 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
-| 6 | Dinero (Stripe) + Ecosistema: roles inversionista/soporte, buró CdC (sandbox), open banking; cobranza como producto separado | [ ] |
+| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 |
+| 2 | Portal público: landing que venda, registro/login separados, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
+| 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED; D1/D2 aprobadas; O1-O3 observaciones con owner) |
+| 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] planificada (EN CURSO) |
+| 5 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
+| 6 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
+| 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
-> Nota de re-segmentación (decision log 2026-08-28): la ola 3 original agrupaba
-> 4 features grandes que colisionaban en `main.rs`/`Cargo.toml`/`models/cliente.rs`;
-> se repartieron en olas 3 y 4 para mantener el paralelismo con archivos disjuntos.
-
+> Re-segmentaciones documentadas en el decision log (2026-08-28 y 2026-08-31).
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
 > Actualizar después de cada paso, quien lo ejecute.
 
 ---
 
-## Ola 3 (actual): identidad verificable
+## Ola 4 (actual): cartera viva — pagos, gráficas de impacto, favicon
 
-Contexto: el alta de cliente valida CURP solo por formato (largo y patrones),
-no por dígito verificador; no pide correo; y el teléfono se captura sin
-verificar que sea del cliente real. La idea (PYMZA.md) pide redundancia:
-CURP real, teléfono con código, correo real. Esta ola hace la verificación
-fuerte por **teléfono + código OTP** (WhatsApp Cloud API; mock en dev que
-imprime el código en el log del backend), la **CURP con dígito verificador**,
-y añade el **correo del cliente** (campo + formato; el envío de código por
-correo queda diferido, ponytail: ver decision log).
+Contexto: la ola 3 quedó APPROVED. V pidió (2026-08-31): gráficas de impacto
+bajo los KPIs del dashboard (captura con 3 tiers de gráficas) y favicon/logo
+en la pestaña del navegador.
 
-### Contrato API ola 3 (ambos executors implementan contra ESTO)
+**Hallazgo de planificación**: hoy el sistema NO registra pagos —
+`autorizar` inserta el plan con `estado: "Activo"` fijo y jamás cambia. Sin
+pagos registrados, "cobrado" siempre es 0 y la morosidad es pura proyección:
+las gráficas de V dirían mentiras. Por eso la feature raíz de esta ola es el
+**registro de pagos** (el corazón del pitch PYMZA es la cobranza); las
+gráficas son su consecuencia visible.
 
-- `Cliente` gana dos campos:
-  - `correo: Option<String>` (opcional; formato validado con `es_correo_valido`).
-  - `telefono_verificado: bool` (default `false`).
-  - `CrearClienteReq` gana `correo: Option<String>`.
-- `POST /api/clientes` (protegido): crea el cliente con `telefono_verificado:
-  false`; valida CURP robusta (formato + dígito verificador + coherencia
-  fecha/sexo/entidad) y correo si viene.
-- Nuevo módulo `backend/src/routes/verificacion.rs` (2 rutas protegidas):
-  - `POST /api/verificaciones/solicitar` — body `{ curp, telefono }`: genera
-    código de 6 dígitos, expira en 10 min, guarda el desafío en colección
-    `verificaciones` (SOLO el hash del código, nunca en claro), lo envía por
-    el `OtpSender` activo. Respuesta `{status: "success"}`. El mock imprime
-    el código en el log del backend (para el flujo de dev).
-  - `POST /api/verificaciones/confirmar` — body `{ curp, telefono, codigo }`:
-    valida contra el desafío vigente (no expirado), marca
-    `telefono_verificado = true` en el cliente de esa CURP, borra el desafío.
-    Errores: 400 código inválido/expirado, 404 sin desafío o cliente inexistente.
-- `OtpSender`: trait con dos impls — `MockOtpSender` (default, imprime el
-  código en el log) y `WhatsAppOtpSender` (llama a la WhatsApp Cloud API de
-  Meta si `WHATSAPP_TOKEN` y `WHATSAPP_PHONE_NUMBER_ID` existen en env; usa
-  `reqwest`). Selector en `main.rs` por env. Cero secretos en el repo.
-- `backend/src/otp.rs`: generación de código, hash, expiración, trait e impls.
-- Deps nuevas backend (justificadas): `reqwest` (llamar WhatsApp API),
-  `rand` (código), `sha2` (hash del código). Ninguna otra.
-- Frontend `alta_cliente.rs`: tras dar de alta un cliente, sección "Verificar
-  teléfono" — botón "Enviar código" → input de 6 dígitos → "Confirmar" →
-  badge "✓ Verificado". En el resultado de búsqueda por CURP, mostrar badge
-  si `telefono_verificado` es true. `api.rs`: helpers
-  `solicitar_verificacion` y `confirmar_verificacion`.
-- Backend: **cero cambios** en el resto de rutas/contratos existentes.
+### Contrato API ola 4 (ambos executors implementan contra ESTO)
+
+- **Colección `pagos`** (nueva): `{ plan_id (ObjectId del plan, como hex),
+  empresa (correo del token), cliente_curp, cuota (1..=plazo_meses), monto,
+  fecha (UTC) }`.
+- **`POST /api/creditos/pagos`** (protegido): body `{ plan_id, cuota, monto }`.
+  Valida: plan existe y `plan.empresa == correo del token`; cuota en
+  `1..=plazo_meses`; cuota no pagada ya (400 si duplicada); monto igual a
+  `pago_mensual` del plan con tolerancia de 1 centavo (400 con mensaje claro).
+  Inserta el pago, recalcula el estado del plan y responde
+  `{status: "success", plan: {...}}`.
+- **Estados del plan** (recalculados tras cada pago): `Liquidado` (todas las
+  cuotas pagadas), `Moroso` (≥1 cuota vencida no pagada: vencimiento de la
+  cuota n = `fecha` del plan + n meses, antes de hoy), `Activo` (resto).
+  `autorizar` sigue creando con "Activo".
+- **`GET /api/creditos`** (existe): cada plan gana `cuotas_pagadas` y
+  `cuotas_vencidas` (calculadas en servidor) para que el frontend solo dibuje.
+- **`GET /api/creditos/resumen`** (nuevo, protegido, tenant del token):
+  `{status: "success", resumen: {...}}` con EXACTAMENTE esta shape:
+  - `cobrado_vs_por_cobrar`: `[{mes: "2026-09", cobrado, por_cobrar}]` — 6
+    meses (el mes actual + 5 previos). cobrado = pagos registrados del mes;
+    por_cobrar = cuotas esperadas de ese mes en planes no liquidados.
+  - `tasa_morosidad`: f64 0..1 = planes Moroso / planes no liquidados.
+  - `flujo_proyectado`: `[{horizonte: 30, monto}, {60, ...}, {90, ...}]` —
+    cuotas que vencen en los próximos 30/60/90 días de planes Activo/Moroso.
+  - `aging`: `[{bucket: "0-30", monto}, {"31-60"}, {"61-90"}, {"90+"}]` —
+    saldo vencido por antigüedad de la cuota (días desde su vencimiento).
+  - `top_deudores`: `[{cliente_curp, nombre, saldo}]` — saldo = total a pagar
+    (pago_mensual × plazo) − pagos registrados, desc, máx 10 (join con
+    `clientes` para el nombre).
+  - `distribucion_montos`: `[{bucket: "0-1k", n}, {"1k-5k"}, {"5k+"}]` — n de
+    planes por `monto_total`.
+- **`dashboard_stats`** (upsert existente): `creditos_activos` = planes
+  Activo+Moroso; `proximos_cobros` = cuotas que vencen en 30 días. Sin
+  romper el shape actual.
+- **WhatsApp plantilla de autenticación**: `WhatsAppOtpSender` deja de mandar
+  mensaje libre y envía PLANTILLA (fuera de la ventana de 24 h solo pasan
+  plantillas): `template: {name: env WHATSAPP_TEMPLATE (default
+  "pymza_otp_verification"), language: {code: env WHATSAPP_TEMPLATE_LANG
+  (default "es")}, components: [{type: "body", parameters: [{type: "text",
+  text: codigo}]}]}`. Si el envío falla → eprintln y continuar (el flujo de
+  dev con mock no se rompe). `WHATSAPP_WABA_ID` NO se usa para enviar (solo
+  gestión) — no agregarlo al código sin motivo.
+- **TTL index** (O2 del auditor ola 3): crear índice TTL (`expireAfterSeconds:
+  0`) sobre `verificaciones.expira_en` (lazy, al construir el cliente DB o al
+  primer `solicitar`).
+- Deps nuevas: **NINGUNA**. Las gráficas son SVG puro en rsx.
+
+### Gráficas diferidas (sin datos que las soporten hoy — decision log)
+
+De la captura de V: "Ventas a crédito vs contado" (no existe captura de
+ventas contado), "Tendencia de recuperación mensual" (necesita ≥2 meses de
+pagos reales), "Intereses generados vs pérdidas por impago" (falta marcar
+impagos), "Score de salud de cartera" (KPI compuesto, cuando Tier 1-2
+maduren), "Predicción de incobrables ML" (ponytail: regresión simple con ≥6
+meses de datos; ML real no se justifica hoy), "Costo de oportunidad"
+(derivado).
 
 ### Mapa de propiedad de archivos
 
 | Archivo/glob | Dueño |
 |-----------|-------|
 | `backend/Cargo.toml`, `backend/src/**`, `backend/scripts/**`, `docs/API.md`, `.env.example` | executor-1 |
-| `frontend/src/**`, `frontend/tailwind.css`, `frontend/assets/tailwind.css` | executor-2 |
+| `frontend/src/**`, `frontend/Dioxus.toml` (solo title/favicon), `frontend/tailwind.css`, `frontend/assets/**` | executor-2 |
 
-Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/Dioxus.toml`,
-`frontend/AGENTS.md` (referencia Dioxus), `frontend/Cargo.toml` (cero deps),
-`AGENTS.md` (raíz), `README.md`, `docs/ROADMAP.md`, `docs/INVESTIGACION.md`,
-`PYMZA.md`, `docker-compose.yml`, `Dockerfile.*`, `.workflow/**`,
-`skills/**`, `backend/.env` (secreto).
+Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/AGENTS.md`,
+`frontend/Cargo.toml` (cero deps), `AGENTS.md` (raíz), `README.md`,
+`docs/ROADMAP.md`, `docs/INVESTIGACION.md`, `PYMZA.md`, `docker-compose.yml`,
+`Dockerfile.*`, `.workflow/**`, `skills/**`, `backend/.env`.
 
 ### Tareas
 
-- [x] T1 (executor-1): CURP robusta + correo del cliente + OTP teléfono (WhatsApp/mock) → brief: `.workflow/briefs/wave3-executor-1.md`
-- [x] T2 (executor-2): flujo de verificación de teléfono en alta de cliente + badges → brief: `.workflow/briefs/wave3-executor-2.md`
+- [ ] T1 (executor-1): pagos + estados de plan + resumen para gráficas + plantilla WhatsApp + TTL → brief: `.workflow/briefs/wave4-executor-1.md`
+- [ ] T2 (executor-2): primitivas SVG + 6 gráficas en dashboard + registrar pago en cartera + favicon/título → brief: `.workflow/briefs/wave4-executor-2.md`
 
 ### Plan de integración
 
@@ -129,22 +153,18 @@ cd frontend && cargo check --target wasm32-unknown-unknown && cargo test
 TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/login \
   -H 'content-type: application/json' \
   -d '{"correo":"nueva@empresa.mx","password":"nueva123"}' | jq -r .token)
-# alta de cliente de prueba (CURP con dígito verificador válido)
-CURP="GACM940101HDFRRR07"
-curl -s -X POST http://127.0.0.1:3000/api/clientes -H "Authorization: Bearer $TOKEN" \
+# crear un plan de prueba (evaluar + autorizar) y tomar su _id de GET /api/creditos
+PLAN_ID=$(curl -s http://127.0.0.1:3000/api/creditos -H "Authorization: Bearer $TOKEN" | jq -r '.creditos[0]._id')
+curl -s -X POST http://127.0.0.1:3000/api/creditos/pagos -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d "{\"curp\":\"$CURP\",\"nombre_completo\":\"Prueba OTP\",\"direccion\":\"X\",\"telefono\":\"5512345678\",\"correo\":\"prueba@correo.mx\"}" | jq .
-# solicitar código → buscar el código en el LOG del backend (mock)
-curl -s -X POST http://127.0.0.1:3000/api/verificaciones/solicitar -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' -d "{\"curp\":\"$CURP\",\"telefono\":\"5512345678\"}" | jq .
-# confirmar con el código del log
-curl -s -X POST http://127.0.0.1:3000/api/verificaciones/confirmar -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' -d "{\"curp\":\"$CURP\",\"telefono\":\"5512345678\",\"codigo\":\"<del-log>\"}" | jq .
-# GET /api/clientes/$CURP → telefono_verificado: true
-curl -s http://127.0.0.1:3000/api/clientes/$CURP -H "Authorization: Bearer $TOKEN" | jq .
+  -d "{\"plan_id\":\"$PLAN_ID\",\"cuota\":1,\"monto\":<pago_mensual del plan>}" | jq .
+# duplicado → 400; cuota 2 de un plan de 12 → estado sigue Activo; pagar todas → Liquidado
+curl -s http://127.0.0.1:3000/api/creditos/resumen -H "Authorization: Bearer $TOKEN" | jq .resumen.tasa_morosidad
+curl -s http://127.0.0.1:3000/api/creditos/resumen -H "Authorization: Bearer TOKEN_INVENTADO" -o /dev/null -w "%{http_code}\n"   # → 401
 
-# 3. Humo UI (navegador, humano): alta cliente → enviar código → confirmar →
-#    badge verificado; búsqueda muestra badge.
+# 3. Humo UI (navegador, humano): gráficas bajo los KPIs, badge de estado en
+#    cartera, registrar pago desde UI, favicon visible en la pestaña, título
+#    "PYMZA" en la pestaña.
 ```
 
 Integrador actualiza los estados de la tabla de olas tras cada paso.
@@ -154,48 +174,48 @@ Integrador actualiza los estados de la tabla de olas tras cada paso.
 El auditor corre `.workflow/audit-checklist.md` sobre el árbol integrado y
 además verifica (evidencia = salida de comandos):
 
-- CURP robusta: `cargo test` incluye casos con dígito verificador inválido
-  (formato OK pero dígito malo → rechazada).
-- El código OTP NUNCA se guarda en claro: `rg "codigo_hash" backend/src/`
-  presente; la colección `verificaciones` solo tiene hash (verificado en vivo
-  con `mongosh` o log).
-- Sin token → 401 en `solicitar`/`confirmar` (curl).
-- Con token pero código inválido/expirado → 400; sin desafío → 404.
-- `telefono_verificado` persiste en el cliente tras confirmar (curl GET).
-- Cero secretos commiteados (`rg "WHATSAPP_" AGENTS.md README.md docs/ backend/src/`
-  → solo `.env.example` con placeholder vacío).
-- Patrón exacto de rutas viejas (aprendizaje ola 2: NO usar `:empresa` suelto,
-  usar `/api/creditos/:empresa` literal): 0 hits en `backend/src/`.
-- Nada fuera del mapa de propiedad modificado (`git log --stat` por rama).
-- Resultado en `.workflow/audits/wave3.md`.
+- Pago duplicado → 400; pago de cuota inexistente → 400; monto ≠ pago_mensual
+  → 400; plan ajeno (otro tenant) → 404/403 (curl en vivo).
+- Plan con todas las cuotas pagadas → `Liquidado`; plan con cuota vencida sin
+  pagar → `Moroso` (en vivo, con fechas manipuladas o plan antiguo).
+- `GET /api/creditos/resumen` es tenant-scoped: con 2 tenants, los datos no
+  cruzan (en vivo).
+- Shape del resumen exacto al contrato (jq por cada campo).
+- Plantilla WhatsApp: test del payload builder; sin token el envío falla suave
+  (log, no panic); `WHATSAPP_TEMPLATE` default correcto.
+- TTL index en `verificaciones` (`mongosh` → `getIndexes()` muestra
+  `expireAfterSeconds`).
+- Favicon: `frontend/assets/favicon.svg` existe, referenciado en `main.rs`
+  (`rel: "icon"`), `Dioxus.toml` title ≠ "frontend".
+- Cero deps nuevas (`git diff <base> -- **/Cargo.toml` vacío).
+- Nada fuera del mapa de propiedad (`git log --stat` por rama).
+- Resultado en `.workflow/audits/wave4.md`.
 
 ---
 
 ## Decision log
 
-Olas 1–2 (contexto histórico; detalle en `.workflow/audits/wave1.md` y
-`wave2.md`):
+Olas 1–3 (contexto histórico; detalle en `.workflow/audits/wave1.md`,
+`wave2.md`, `wave3.md`):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
 | 2026-08-13 | Tenant key = `correo` de empresa, no ObjectId nuevo | Ya es único y validado; docs existentes se migran con script |
 | 2026-08-13 | JWT HS256 (`jsonwebtoken` v9), secret por env, exp 24h | Lo mínimo que funciona; techo: refresh tokens + httpOnly cookies |
 | 2026-08-13 | App de cobradores y Tauri fuera de este plan | Productos separados; dependen de que la red esté viva |
-| 2026-08-13 | OTP por WhatsApp: proveedor objetivo = WhatsApp Cloud API (Meta); n8n se reserva para cobranza (ola 6+) | Para un código de 6 dígitos, llamada directa del backend al proveedor es lo mínimo que funciona |
-| 2026-08-17 | Humo ola 1: el schema real entrega `stats.empresa`, no `empresa` | Corregido el comando del plan en olas siguientes |
-| 2026-08-17 | VistaPública sin router en la ola 2 | 3 vistas no justifican router; techo: router cuando existan URLs públicas reales (ola 5) |
-| 2026-08-17 | Auto-login tras registro exitoso | Contratar sin fricción: alta + sesión directa |
-| 2026-08-17 | Default tema = dark; light opt-in | Minimiza el cambio visual de golpe |
-| 2026-08-17 | `API_BASE` vía `option_env!` con default dev | Configurable en build/deploy sin tocar código |
-| 2026-08-28 | E1 (AGENTS.md falso) y E2 (humo UI) de la ola 2 resueltas: stash aplicado (`f352e38`), attest navegador de V | Árbol sin stashes, E2 heredada de ola 1 saldada |
+| 2026-08-13 | OTP por WhatsApp: proveedor objetivo = WhatsApp Cloud API (Meta) | Llamada directa del backend al proveedor es lo mínimo que funciona |
+| 2026-08-17 | VistaPública sin router; auto-login tras registro; default tema dark; `API_BASE` vía `option_env!` | Mínimos que funcionan, techos nombrados |
+| 2026-08-28 | Re-segmentación 1: identidad (3) separada de OCR/recibos (4) | Colisiones en main.rs/Cargo.toml/models impedían paralelismo |
+| 2026-08-31 | Ola 3 APPROVED. D1: CURPs del seed corregidas a dv reales (05/02). D2: `OtpSender` por `OnceLock` global | Auditor aprobó ambas; techo documentado |
+| 2026-08-31 | Observaciones ola 3: O1 hash demo roto (owner V: re-seed), O2 TTL pendiente (→ ola 4), O3 datos de humo en Atlas (owner V) | O2 se resuelve en esta ola |
 
-Ola 3 (nuevas):
+Ola 4 (nuevas):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
-| 2026-08-28 | Re-segmentación: ola 3 = identidad (CURP+correo+OTP); ola 4 = KYC/OCR + score por recibos; ola 5 = contrato PDF + producción | Las 4 features originales de la "ola 3" colisionaban en `main.rs`/`Cargo.toml`/`models/cliente.rs`; partidas, cada ola mantiene 2 executors con archivos disjuntos |
-| 2026-08-28 | Código OTP: 6 dígitos, hash SHA-256 en DB (nunca en claro), expira en 10 min, ligado a `curp+telefono` | El desafío verifica que el teléfono pertenece al cliente que se da de alta; hash protege la DB si se filtra |
-| 2026-08-28 | `OtpSender` trait: `MockOtpSender` (default, código en log) y `WhatsAppOtpSender` (env `WHATSAPP_TOKEN`+`WHATSAPP_PHONE_NUMBER_ID`) | Dev sin credenciales funciona; producción solo activa WhatsApp con env. Cero secretos en repo |
-| 2026-08-28 | Correo del cliente: campo + formato ahora; envío de código por correo diferido | El OTP por WhatsApp es la verificación fuerte; el correo con código exige SMTP — se añade cuando haya un proveedor (ponytail: techo nombrado) |
-| 2026-08-28 | Deps nuevas backend permitidas: `reqwest`, `rand`, `sha2` | Las tres cubren el OTP (HTTP al proveedor, código, hash); ninguna otra |
-| 2026-08-31 | Integración ola 3: la CURP de ejemplo del plan (`GACM940101HDFRRR07`) NO pasa el dígito verificador; usar CURPs del seed (`RAMJ920215MDFMZR05`, etc.) | El ejemplo se escribió antes de implementar el verificador; los tests cubren ambas vías |
+| 2026-08-31 | Re-segmentación 2 → 7 olas: ola 4 = pagos + gráficas + favicon (pedido directo de V); 5 = OCR/recibos; 6 = contrato PDF + producción + release gate; 7 = Stripe + ecosistema | Las gráficas de V exigen datos reales de cobranza; registrar pagos es la feature raíz que las desbloquea |
+| 2026-08-31 | Las gráficas son SVG puro en rsx (bar/line/donut/hbar), cero librería de charts | Sin deps nuevas; primitivas de 3 tipos cubren las 6 gráficas. Techo: librería si se necesita interactividad avanzada (tooltips/zoom) |
+| 2026-08-31 | Estados de plan con ciclo de vida real: Activo → Moroso (cuota vencida sin pagar) → Liquidado (todo pagado) | Hoy "Activo" es fijo; sin esto la morosidad y el aging son mentira |
+| 2026-08-31 | Gráficas diferidas: ventas crédito/contado, tendencia de recuperación, intereses vs pérdidas, score de salud, predicción ML, costo de oportunidad | No hay datos reales que las soporten (no se registran ventas contado ni impagos; ML con <6 meses de pagos es decoración) — se activan cuando existan |
+| 2026-08-31 | WhatsApp: envío por PLANTILLA de autenticación (nombre por env `WHATSAPP_TEMPLATE`), no mensaje libre | Fuera de la ventana de 24h Meta solo permite plantillas; V creará `pymza_otp_verification` cuando la verificación de Meta Business se apruebe (en curso, SLA 24-48h) |
+| 2026-08-31 | Verificación CURP oficial (RENAPO): no existe API pública; vías = convenio RENAPO directo (trámite legal) o proveedores KYC comerciales con API (Verificamex, JAAK, Truora, etc., pago por consulta, hay prueba gratis) | Se integra en la ola 7 con trait `VerificadorCurp` (mismo patrón que `OtpSender`: mock hoy, proveedor cuando V firme); hoy la redundancia es dígito verificador + OTP + OCR INE (ola 5) |
