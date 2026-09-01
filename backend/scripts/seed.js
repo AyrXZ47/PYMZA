@@ -24,9 +24,12 @@ db.empresas.insertMany([
   { correo: CORREO_DEMO, password: HASH_DEMO123, nombre_empresa: EMPRESA },
 ]);
 
+// CURPs con dígito verificador oficial (Instructivo RENAPO, DOF 18-10-2021).
+// Los originales ...ZR03 y ...RN09 no pasaban el algoritmo; se corrigió solo
+// el 18º carácter (...ZR05, ...RN02). GAML ya era válida tal cual.
 db.clientes.insertMany([
   {
-    curp: 'RAMJ920215MDFMZR03',
+    curp: 'RAMJ920215MDFMZR05',
     nombre_completo: 'Janeth Ramos Zamora',
     score: 720,
     nivel_riesgo: 'Bajo',
@@ -44,7 +47,7 @@ db.clientes.insertMany([
     telefono: '5559876543',
   },
   {
-    curp: 'GARV850710MCHLRN09',
+    curp: 'GARV850710MCHLRN02',
     nombre_completo: 'Vanessa García Ruiz',
     score: 510,
     nivel_riesgo: 'Alto',
@@ -57,7 +60,7 @@ db.clientes.insertMany([
 db.planes_pago.insertMany([
   {
     empresa: CORREO_DEMO,
-    cliente_curp: 'RAMJ920215MDFMZR03',
+    cliente_curp: 'RAMJ920215MDFMZR05',
     producto: 'Taladro Bosch',
     monto_total: 3200.0,
     plazo_meses: 6,

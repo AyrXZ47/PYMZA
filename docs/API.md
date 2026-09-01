@@ -6,7 +6,7 @@ Base URL: `http://127.0.0.1:3000`
 
 Formato de intercambio: `application/json`.
 
-Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
+Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`.
 
 ## Autenticación (JWT Bearer)
 
@@ -121,16 +121,22 @@ Busca un cliente existente en la red PYMZA por su CURP.
 {
   "status": "success",
   "cliente": {
-    "curp": "GARM980412HDFNRL08",
+    "curp": "GARM980412HDFNRL05",
     "nombre_completo": "María García Rodríguez",
     "score": 550,
     "nivel_riesgo": "Medio",
     "historial_pagos": "Sin historial en la red",
     "direccion": "Calle 5 de Mayo 123, CDMX",
-    "telefono": "5512345678"
+    "telefono": "5512345678",
+    "correo": "maria@correo.mx",
+    "telefono_verificado": false
   }
 }
 ```
+
+`telefono_verificado` siempre se devuelve (`false` para clientes dados de alta
+antes de la verificación por OTP, o aún sin verificar). `correo` solo aparece
+si el cliente tiene uno.
 
 **Respuesta (no existe):**
 ```json
@@ -146,37 +152,48 @@ Busca un cliente existente en la red PYMZA por su CURP.
 
 ## POST `/api/clientes` — protegida
 
-Alta de un cliente nuevo. Valida el formato de CURP (18 caracteres alfanuméricos) y evita duplicados. El score base es `550` y el nivel de riesgo `"Medio"`.
+Alta de un cliente nuevo. Valida la CURP de forma robusta: 18 caracteres con
+estructura CURP (mayúsculas/dígitos, fecha coherente con el calendario
+—incluidos años bisiestos—, sexo, entidad federativa) y **dígito verificador
+oficial** (Instructivo RENAPO, DOF 18-10-2021). Evita duplicados. Si viene
+`correo`, valida su formato. El score base es `550`, el nivel de riesgo
+`"Medio"` y el cliente se crea siempre con `telefono_verificado: false`
+(la verificación se hace después por OTP; ver `/api/verificaciones`).
 
 **Requiere:** `Authorization: Bearer <token>`
 
 **Payload:**
 ```json
 {
-  "curp": "GARM980412HDFNRL08",
+  "curp": "GARM980412HDFNRL05",
   "nombre_completo": "María García Rodríguez",
   "direccion": "Calle 5 de Mayo 123, CDMX",
-  "telefono": "5512345678"
+  "telefono": "5512345678",
+  "correo": "maria@correo.mx"
 }
 ```
+
+`correo` es opcional; si no viene, omítelo o mándalo `null`.
 
 **Respuesta (éxito):**
 ```json
 {
   "status": "success",
   "cliente": {
-    "curp": "GARM980412HDFNRL08",
+    "curp": "GARM980412HDFNRL05",
     "nombre_completo": "María García Rodríguez",
     "score": 550,
     "nivel_riesgo": "Medio",
     "historial_pagos": "Sin historial en la red",
     "direccion": "Calle 5 de Mayo 123, CDMX",
-    "telefono": "5512345678"
+    "telefono": "5512345678",
+    "telefono_verificado": false
   }
 }
 ```
 
-**Respuestas (error):** CURP inválida / duplicado (mensajes descriptivos), `401` sin token.
+**Respuestas (error):** CURP inválida (formato o dígito verificador) / correo
+inválido / duplicado (mensajes descriptivos), `401` sin token.
 
 **Colección Mongo:** `clientes` (inserta).
 
@@ -369,6 +386,81 @@ Estadísticas del dashboard de la empresa autenticada.
 ```
 
 **Colección Mongo:** `dashboard_stats` (busca por `empresa`).
+
+---
+
+## POST `/api/verificaciones/solicitar` — protegida
+
+Ola 3 — verificación de teléfono por OTP. Genera un código de 6 dígitos
+ligado al par `curp+telefono`, guarda el desafío en la colección
+`verificaciones` (**solo el hash SHA-256 del código, nunca en claro**;
+expira en 10 minutos; un desafío previo vigente del mismo par se reemplaza)
+y lo envía por el `OtpSender` activo:
+
+- **Mock (default en dev):** el código queda impreso en el log del backend
+  (`OTP MOCK para <telefono>: <codigo>`).
+- **WhatsApp Cloud API:** activa si `WHATSAPP_TOKEN` y
+  `WHATSAPP_PHONE_NUMBER_ID` existen y no están vacías (ver `.env.example`).
+
+**Requiere:** `Authorization: Bearer <token>`
+
+**Payload:**
+```json
+{
+  "curp": "GACM940101HDFRRR09",
+  "telefono": "5512345678"
+}
+```
+
+**Respuesta (éxito):**
+```json
+{ "status": "success" }
+```
+
+**Respuesta (error de DB):** `500` con `{ "status": "error", "message": "Error interno" }`.
+
+**Colección Mongo:** `verificaciones` (documentos `{ curp, telefono, codigo_hash, expira_en }`).
+
+---
+
+## POST `/api/verificaciones/confirmar` — protegida
+
+Confirma la verificación del teléfono: valida el código contra el desafío
+vigente (no expirado); si coincide, marca `telefono_verificado = true` en el
+cliente (actualización de un solo campo), borra el desafío y responde.
+
+**Requiere:** `Authorization: Bearer <token>`
+
+**Payload:**
+```json
+{
+  "curp": "GACM940101HDFRRR09",
+  "telefono": "5512345678",
+  "codigo": "123456"
+}
+```
+
+**Respuesta (éxito):**
+```json
+{ "status": "success", "telefono_verificado": true }
+```
+
+**Respuestas (error):**
+- `400` — código incorrecto o desafío expirado:
+  ```json
+  { "status": "error", "message": "Código inválido o expirado" }
+  ```
+- `404` — no hay desafío para ese `curp+telefono`:
+  ```json
+  { "status": "error", "message": "No hay un código de verificación solicitado" }
+  ```
+- `404` — el cliente no existe:
+  ```json
+  { "status": "error", "message": "Cliente no existe en la red PYMZA" }
+  ```
+
+**Colecciones Mongo:** `verificaciones` (lee y borra el desafío) y `clientes`
+(actualiza `telefono_verificado`).
 
 ---
 
