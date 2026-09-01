@@ -16,3 +16,8 @@ chrono = "0.4"
 
 argon2 = "0.5"
 jsonwebtoken = "9"
+
+# Ola 3 (OTP por teléfono): HTTP a la WhatsApp Cloud API, código aleatorio y hash.
+reqwest = { version = "0.11", features = ["json"] } # default-tls (OpenSSL), coherente con mongodb openssl-tls
+rand = "0.8"
+sha2 = "0.10"

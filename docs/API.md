@@ -6,7 +6,7 @@ Base URL: `http://127.0.0.1:3000`
 
 Formato de intercambio: `application/json`.
 
-Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`.
+Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`.
 
 ## Autenticación (JWT Bearer)
 
@@ -386,6 +386,81 @@ Estadísticas del dashboard de la empresa autenticada.
 ```
 
 **Colección Mongo:** `dashboard_stats` (busca por `empresa`).
+
+---
+
+## POST `/api/verificaciones/solicitar` — protegida
+
+Ola 3 — verificación de teléfono por OTP. Genera un código de 6 dígitos
+ligado al par `curp+telefono`, guarda el desafío en la colección
+`verificaciones` (**solo el hash SHA-256 del código, nunca en claro**;
+expira en 10 minutos; un desafío previo vigente del mismo par se reemplaza)
+y lo envía por el `OtpSender` activo:
+
+- **Mock (default en dev):** el código queda impreso en el log del backend
+  (`OTP MOCK para <telefono>: <codigo>`).
+- **WhatsApp Cloud API:** activa si `WHATSAPP_TOKEN` y
+  `WHATSAPP_PHONE_NUMBER_ID` existen y no están vacías (ver `.env.example`).
+
+**Requiere:** `Authorization: Bearer <token>`
+
+**Payload:**
+```json
+{
+  "curp": "GACM940101HDFRRR09",
+  "telefono": "5512345678"
+}
+```
+
+**Respuesta (éxito):**
+```json
+{ "status": "success" }
+```
+
+**Respuesta (error de DB):** `500` con `{ "status": "error", "message": "Error interno" }`.
+
+**Colección Mongo:** `verificaciones` (documentos `{ curp, telefono, codigo_hash, expira_en }`).
+
+---
+
+## POST `/api/verificaciones/confirmar` — protegida
+
+Confirma la verificación del teléfono: valida el código contra el desafío
+vigente (no expirado); si coincide, marca `telefono_verificado = true` en el
+cliente (actualización de un solo campo), borra el desafío y responde.
+
+**Requiere:** `Authorization: Bearer <token>`
+
+**Payload:**
+```json
+{
+  "curp": "GACM940101HDFRRR09",
+  "telefono": "5512345678",
+  "codigo": "123456"
+}
+```
+
+**Respuesta (éxito):**
+```json
+{ "status": "success", "telefono_verificado": true }
+```
+
+**Respuestas (error):**
+- `400` — código incorrecto o desafío expirado:
+  ```json
+  { "status": "error", "message": "Código inválido o expirado" }
+  ```
+- `404` — no hay desafío para ese `curp+telefono`:
+  ```json
+  { "status": "error", "message": "No hay un código de verificación solicitado" }
+  ```
+- `404` — el cliente no existe:
+  ```json
+  { "status": "error", "message": "Cliente no existe en la red PYMZA" }
+  ```
+
+**Colecciones Mongo:** `verificaciones` (lee y borra el desafío) y `clientes`
+(actualiza `telefono_verificado`).
 
 ---
 

@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod models;
+mod otp;
 mod routes;
 
 use std::net::SocketAddr;
@@ -11,6 +12,7 @@ use auth::{cors_layer, jwt_secret, login_empresa, EmpresaSession};
 use routes::cliente::{buscar_cliente, crear_cliente, reportar_cliente};
 use routes::credito::{autorizar_credito, evaluar_credito, obtener_creditos, obtener_dashboard};
 use routes::empresa::alta_empresa;
+use routes::verificacion::{confirmar_verificacion, solicitar_verificacion};
 
 #[tokio::main]
 async fn main() {
@@ -33,6 +35,8 @@ async fn main() {
         .route("/api/creditos/autorizar", post(autorizar_credito))
         .route("/api/creditos", get(obtener_creditos))
         .route("/api/dashboard", get(obtener_dashboard))
+        .route("/api/verificaciones/solicitar", post(solicitar_verificacion))
+        .route("/api/verificaciones/confirmar", post(confirmar_verificacion))
         .layer(cors_layer())
         .with_state(db_client);
 
