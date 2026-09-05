@@ -291,6 +291,17 @@ mod tests {
     }
 
     #[test]
+    fn los_parsers_leen_el_output_real_del_fixture() {
+        // Salida verificada de:
+        //   tesseract backend/scripts/fixture_ine.png stdout -l spa --psm 6
+        // La CURP va agrupada (como en una credencial real) para que tesseract
+        // no confunda el '0' con 'O'; buscar_curp la reconstruye.
+        let texto = "MARIA GOMEZ LOPEZ\nGAML 930528 HDFLNR 05\n";
+        assert_eq!(buscar_curp(texto), Some(CURP_SEED.to_string()));
+        assert_eq!(buscar_nombre(texto).as_deref(), Some("MARIA GOMEZ LOPEZ"));
+    }
+
+    #[test]
     fn buscar_monto_lee_formatos_del_contrato() {
         assert_eq!(buscar_monto("IMPORTE: $1,234.56"), Some(1234.56));
         assert_eq!(buscar_monto("TOTAL: $450.00"), Some(450.0));
