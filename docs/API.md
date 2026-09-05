@@ -6,7 +6,7 @@ Base URL: `http://127.0.0.1:3000`
 
 Formato de intercambio: `application/json`.
 
-Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `pagos`, `dashboard_stats`, `verificaciones`.
+Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `pagos`, `dashboard_stats`, `verificaciones`, `recibos`.
 
 ## Autenticación (JWT Bearer)
 
@@ -129,14 +129,15 @@ Busca un cliente existente en la red PYMZA por su CURP.
     "direccion": "Calle 5 de Mayo 123, CDMX",
     "telefono": "5512345678",
     "correo": "maria@correo.mx",
-    "telefono_verificado": false
+    "telefono_verificado": false,
+    "ine_verificada": false
   }
 }
 ```
 
-`telefono_verificado` siempre se devuelve (`false` para clientes dados de alta
-antes de la verificación por OTP, o aún sin verificar). `correo` solo aparece
-si el cliente tiene uno.
+`telefono_verificado` e `ine_verificada` siempre se devuelven (`false` para
+clientes dados de alta antes de la verificación por OTP / KYC, o aún sin
+verificar). `correo` solo aparece si el cliente tiene uno.
 
 **Respuesta (no existe):**
 ```json
@@ -187,7 +188,8 @@ oficial** (Instructivo RENAPO, DOF 18-10-2021). Evita duplicados. Si viene
     "historial_pagos": "Sin historial en la red",
     "direccion": "Calle 5 de Mayo 123, CDMX",
     "telefono": "5512345678",
-    "telefono_verificado": false
+    "telefono_verificado": false,
+    "ine_verificada": false
   }
 }
 ```
@@ -242,6 +244,131 @@ Reporta morosidad de un cliente a la red PYMZA (alerta temprana). Marca al clien
 ```
 
 **Colección Mongo:** `clientes` (actualiza el campo `alerta`).
+
+---
+
+## POST `/api/clientes/:curp/kyc` — protegida
+
+Ola 5 — KYC de la INE: valida que la imagen subida sea legible (OCR con el
+binario `tesseract`, timeout 30 s) y que la CURP leída coincida con la del
+cliente; si coincide, marca `ine_verificada = true`. **La imagen NO se
+guarda** — solo persiste el resultado de la verificación.
+
+**Requiere:** `Authorization: Bearer <token>`
+
+**Payload:** el archivo va en **base64 dentro del JSON** (no multipart):
+```json
+{
+  "archivo_b64": "<png/jpg/webp en base64>",
+  "mime": "image/png"
+}
+```
+
+**Validaciones (en orden):**
+1. `mime` ∈ `image/png` / `image/jpeg` / `image/webp` → si no, `400`:
+   ```json
+   { "status": "error", "message": "Mime no permitido: solo image/png, image/jpeg o image/webp" }
+   ```
+2. Tamaño decodificado ≤ **2 MB** (medido por el largo del base64, antes de
+   decodificar) → si no, `400`:
+   ```json
+   { "status": "error", "message": "El archivo excede el máximo de 2 MB" }
+   ```
+3. Base64 válido → si no, `400`:
+   ```json
+   { "status": "error", "message": "Base64 inválido" }
+   ```
+4. El cliente existe → si no, `404`:
+   ```json
+   { "status": "error", "message": "Cliente no existe en la red PYMZA" }
+   ```
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "curp_ine": "GAML930528HDFLNR05",
+  "nombre_ine": "MARIA GOMEZ LOPEZ",
+  "coincide": true,
+  "ine_verificada": true
+}
+```
+
+- `curp_ine` / `nombre_ine`: lo que el OCR leyó de la imagen (`null` si no se
+  encontró). La CURP se busca tolerando el ruido típico de OCR (espacios,
+  saltos de línea, ligaduras entre caracteres; minúsculas se suben).
+- `coincide`: `curp_ine` == CURP del path. Solo con `true` se marca
+  `ine_verificada`; con CURP distinta la respuesta trae además `message`
+  ("La CURP de la INE no coincide con el cliente") y el cliente NO se marca.
+- Si no se encontró CURP en el texto → `success` con `curp_ine: null`,
+  `coincide: false` y `message` "No se encontró una CURP legible en la
+  imagen".
+- Si `tesseract` no está instalado en el servidor o falla → `500`:
+  ```json
+  { "status": "error", "message": "OCR no disponible en este servidor" }
+  ```
+
+**Para probar sin una INE real:** `backend/scripts/fixture_ine.png` lleva la
+CURP `GAML930528HDFLNR05` del seed y el nombre `MARIA GOMEZ LOPEZ` (con
+`coincide: true`).
+
+**Idioma del OCR:** env `OCR_LANG` (default `"spa"`; ver `.env.example`).
+
+**Colecciones Mongo:** `clientes` (lee y actualiza `ine_verificada`).
+
+---
+
+## POST `/api/clientes/:curp/recibos` — protegida
+
+Ola 5 — score alternativo por recibos de servicios: sube un recibo (luz,
+agua o teléfono), el OCR extrae el monto y, si el recibo es legible (monto
+encontrado o texto ≥ 50 caracteres), suma **+25** al score del cliente y
+recalcula el nivel de riesgo (`score >= 750 → "Bajo"`, `>= 550 → "Medio"`,
+`< 550 → "Alto"`). Máximo **2 recibos por cliente** (global por CURP). La
+imagen NO se guarda — solo `{curp, empresa, tipo, monto_leido, fecha}`.
+
+**Requiere:** `Authorization: Bearer <token>` — `recibos.empresa` = correo del
+token (quién subió); el tope de 2 es global por cliente, sin importar la
+empresa que suba.
+
+**Payload:**
+```json
+{
+  "archivo_b64": "<png/jpg/webp en base64>",
+  "mime": "image/png",
+  "tipo": "luz"
+}
+```
+
+**Validaciones:** `tipo` ∈ `luz` / `agua` / `telefono` → si no, `400` ("Tipo
+inválido: debe ser luz, agua o telefono"); después mime / tamaño (2 MB) /
+base64 / cliente-existe igual que en KYC.
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "monto_leido": 450.0,
+  "score": 575,
+  "nivel_riesgo": "Medio",
+  "recibos_contados": 1
+}
+```
+
+- `monto_leido`: el monto que el OCR extrajo (`null` si no encontró ninguno;
+  se leen formatos como `$1,234.56`, `1234.56 MXN`, `TOTAL: $450.00`).
+- Si el recibo NO es legible (sin monto y texto < 50 chars): `success` con el
+  score SIN cambio, el recibo no se guarda y `recibos_contados` refleja los
+  que ya tenía el cliente.
+- Tercer recibo (con 2 ya guardados y recibo legible) → `400`:
+  ```json
+  { "status": "error", "message": "Máximo 2 recibos por cliente" }
+  ```
+- tesseract ausente/fallido → `500` "OCR no disponible en este servidor"
+  (igual que KYC).
+
+**Colecciones Mongo:** `recibos` (inserta y cuenta por `curp`), `clientes`
+(actualiza `score` y `nivel_riesgo`).
 
 ---
 

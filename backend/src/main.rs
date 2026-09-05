@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod models;
+mod ocr;
 mod otp;
 mod routes;
 
@@ -15,6 +16,7 @@ use routes::credito::{
     registrar_pago,
 };
 use routes::empresa::alta_empresa;
+use routes::kyc::{kyc_verificar_ine, recibo_subir};
 use routes::verificacion::{confirmar_verificacion, solicitar_verificacion};
 
 #[tokio::main]
@@ -34,6 +36,8 @@ async fn main() {
         .route("/api/clientes", post(crear_cliente))
         .route("/api/clientes/:curp", get(buscar_cliente))
         .route("/api/clientes/:curp/reportar", post(reportar_cliente))
+        .route("/api/clientes/:curp/kyc", post(kyc_verificar_ine))
+        .route("/api/clientes/:curp/recibos", post(recibo_subir))
         .route("/api/creditos/evaluar", post(evaluar_credito))
         .route("/api/creditos/autorizar", post(autorizar_credito))
         .route("/api/creditos/pagos", post(registrar_pago))
