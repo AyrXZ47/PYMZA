@@ -21,216 +21,211 @@ de crédito esté viva. Tauri/escritorio: el producto es web primero.
 
 | Capa | Tech |
 |---|---|
-| Frontend | Dioxus 0.7.9 (pin `=0.7.9`) Rust → WASM + Tailwind v4. `frontend/AGENTS.md` es la referencia API obligatoria |
-| Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs` (JWT HS256), `otp.rs` |
-| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`, `pagos` (+ `recibos` desde ola 5) |
-| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 6; Dockerfile.backend instalará `tesseract-ocr` + `tesseract-ocr-spa`) |
+| Frontend | Dioxus 0.7.9 (pin `=0.7.9`) Rust → WASM + Tailwind v4. `frontend/AGENTS.md` es la referencia API obligatoria. `API_BASE` configurable por build (ola 2) |
+| Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs`, `otp.rs`, `ocr.rs` |
+| DB | MongoDB Atlas (real) vía `MONGODB_URI`. Colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`, `pagos`, `recibos` |
+| Infra | Docker Compose + Dockerfiles (tesseract en imagen backend); despliegue objetivo: Railway (esta ola, ejecutado por V tras el release gate) |
 
 Constraints:
-- Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC, KYC) solo en `.env` local.
-- `Cargo.lock` gitignored (root `.gitignore`) — normal al añadir deps.
-- NixOS: `dx` no compila Tailwind; el CSS compilado (`frontend/assets/tailwind.css`) está commiteado. Si una ola cambia clases Tailwind, regenerar con `frontend/tailwind.sh` y commitear el CSS.
-- Sin CI. Verificación disponible: `cargo test` (backend y frontend nativo) + `cargo check --target wasm32-unknown-unknown` (frontend WASM).
-- Backend necesita librerías dev de OpenSSL para compilar (driver mongodb con `openssl-tls`).
-- OCR (ola 5): motor = binario `tesseract` invocado como proceso hijo (cero deps Rust); requiere `tesseract` + traineddata `spa` en el entorno (NixOS: `nix run nixpkgs#tesseract -- --version` para verificar; si falta, los endpoints devuelven error claro 500 "OCR no disponible").
-- Release gate (ola 6): `skills/security-audit` con cero CRITICAL/HIGH antes de producción.
-- Demo real en Atlas: `demo@pymza.mx` / `demo1234` (V re-seedeó 2026-09-04; docs actualizadas por planner).
+- Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC, KYC) solo en `.env` local / variables de Railway.
+- `Cargo.lock` gitignored — normal al añadir deps.
+- NixOS: `dx` no compila Tailwind; el CSS compilado está commiteado. Regenerar con `frontend/tailwind.sh` si una ola cambia clases.
+- Sin CI. Verificación: `cargo test` + `cargo check --target wasm32-unknown-unknown`.
+- OCR: binario `tesseract` (Docker: `tesseract-ocr` + `tesseract-ocr-spa`).
+- **Release gate (ESTA ola): `skills/security-audit` con cero CRITICAL/HIGH (o excepciones documentadas con owner) ANTES de desplegar a Railway.**
+- Demo real en Atlas: `demo@pymza.mx` / `demo1234`.
 
 ## Waves
 
 | Ola | Foco | Estado |
 |-----|------|--------|
-| 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 |
-| 2 | Portal público: landing que venda, registro/login separados, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
-| 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED) |
-| 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] auditada 2026-09-04 (APPROVED; N1-N3 informativas) |
-| 5 | KYC/OCR real (subida de archivos, tesseract) + score alternativo por recibos de servicios | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS; E1 >2MB→413, E2 fixture no sirve para recibos — owner ola 6; humo UI pendiente de V) |
-| 6 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
+| 1 | Cimientos: JWT real + multi-tenant + frontend modularizado | [x] auditada 2026-08-17 |
+| 2 | Portal público: landing, registro/login, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
+| 3 | Identidad verificable: CURP dv, correo, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 |
+| 4 | Cartera viva: pagos + estados de plan + gráficas SVG + favicon | [x] auditada 2026-09-04 |
+| 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
+| 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] planificada (EN CURSO) |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
-> Re-segmentaciones documentadas en el decision log (2026-08-28, 2026-08-31).
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
 > Actualizar después de cada paso, quien lo ejecute.
 
 ---
 
-## Ola 5 (actual): KYC/OCR real + score alternativo por recibos
+## Ola 6 (actual): contrato PDF + producción (release gate)
 
-Contexto: la red de clientes ya verifica teléfono por OTP (ola 3) y la
-cartera vive con pagos reales y gráficas (ola 4). Faltan las dos señales de
-confianza que hacen al pitch de PYMZA: **la INE subida es real y coincide**
-(KYC) y **el cliente sin buró obtiene score por sus recibos de servicios**
-(motor de datos alternativos — idea original de PYMZA.md).
+Contexto: la ola 5 quedó APPROVED WITH EXCEPTIONS (E1: archivos >2MB devuelven
+413 por el body-limit de Axum en lugar del 400 del contrato; E2: el fixture
+no sirve para el humo de recibos) — ambas caen en el alcance de esta ola.
+Esta ola convierte el proyecto en un **producto desplegable**: el PDF del
+contrato que la empresa le entrega al cliente, el hardening pre-producción
+(CORS, límites, rate limiting), los Dockerfiles listos para Railway, y el
+**release gate**: `skills/security-audit` con cero CRITICAL/HIGH antes de que
+V despliegue.
 
-Decisiones de diseño (ponytail, razones en decision log):
-- Motor OCR = **binario `tesseract`** invocado como proceso hijo con timeout
-  (cero deps Rust para el motor; Docker lo instalará en la ola 6).
-- Subida = **base64 en JSON** (no multipart): reqwest/wasm en el frontend es
-  la única forma portable; archivos de INE/recibo son pequeños.
-- **La imagen NO se guarda** (privacy by design): solo el resultado de la
-  verificación. Techo: guardar si el negocio o regulación lo piden.
-- Score por recibos = heurística v1: +25 por recibo legible (máx 2 recibos).
-  El score alternativo real (historial de pagos de servicios) exige open
-  banking — ola 7.
+División clara de responsabilidades: **los executors dejan TODO listo y
+verificado (build Docker local incluido); el DESPLIEGUE a Railway lo ejecuta
+V con `docs/DEPLOY.md` DESPUÉS de que la auditoría apruebe el release gate.**
 
-### Contrato API ola 5 (ambos executors implementan contra ESTO)
+### Contrato API ola 6 (ambos executors implementan contra ESTO)
 
-- **`Cliente`** gana `ine_verificada: bool` (default false, como los campos de
-  la ola 3 — clientes previos los leen con default).
-- **`POST /api/clientes/:curp/kyc`** (protegido): body
-  `{archivo_b64: String, mime: String}`. Validaciones (trust boundary, en
-  orden): cliente existe y pertenece a la red (404 si no); mime ∈
-  {image/png, image/jpeg, image/webp} (400); tamaño decodificado ≤ 2 MB (400).
-  Decodifica, corre tesseract (timeout 30s, idioma env `OCR_LANG` default
-  "spa"), extrae la CURP del texto con la regex del formato CURP (función
-  pura testada con texto ruidoso de OCR). Compara con el `curp` del path.
-  Marca `ine_verificada = true` si coincide. Respuesta:
-  `{status: "success", curp_ine: <string|null>, nombre_ine: <string|null>,
-  coincide: bool, ine_verificada: bool}`. Si tesseract no está instalado o
-  falla → 500 `{status:"error", message:"OCR no disponible en este
-  servidor"}` sin panickear. Si no se encuentra CURP en el texto → success
-  con `curp_ine: null, coincide: false` y mensaje.
-- **`POST /api/clientes/:curp/recibos`** (protegegido): body
-  `{archivo_b64, mime, tipo: "luz"|"agua"|"telefono"}` (tipo invalidado 400;
-  mime/tamaño igual que kyc). OCR extrae el monto (regex `$`/pesos, función
-  pura testada). Inserta en colección `recibos`:
-  `{curp, empresa (correo del token), tipo, monto_leido (f64|null), fecha}`.
-  Si el recibo es legible (monto encontrado o texto ≥50 chars), aplica bonus
-  de score: `score += 25`, máximo 2 recibos por cliente (query a `recibos`;
-  si ya hay 2 → 400 "Máximo 2 recibos por cliente"). Recalcula
-  `nivel_riesgo` con función pura `nivel_por_score(score)`:
-  `>=750 "Bajo"`, `>=550 "Medio"`, `<550 "Alto"` (tests). Actualiza el
-  cliente. Respuesta:
-  `{status: "success", monto_leido: <f64|null>, score, nivel_riesgo,
-  recibos_contados: n}`.
-- **`GET /api/clientes/:curp`** ya serializa los campos nuevos
-  (`ine_verificada`) — el frontend solo dibuja.
-- **`backend/src/ocr.rs`** (nuevo): `extraer_texto(bytes, mime) ->
-  Result<String>` (escribe temp file, corre `tesseract <file> stdout -l
-  $OCR_LANG --psm 6` con `tokio::process::Command` + timeout, borra temp),
-  `buscar_curp(&str) -> Option<String>` (regex, función pura),
-  `buscar_monto(&str) -> Option<f64>` (regex, función pura). El binario
-  `tesseract` se busca en PATH; si no existe → error "OCR no disponible".
-- **Deps nuevas backend: SOLO `base64 = "0.22"`.** Cero otras.
-- **Fixture de prueba** (nuevo): `backend/scripts/fixture_ine.png` — imagen
-  (PNG, ~600×400) con texto grande y legible que incluya una CURP válida
-  (dígito verificador real, ej. una del seed) y un nombre. La genera el
-  executor-1 en su worktree (la herramienta que prefiera) y se commitea, para
-  que el humo de integración no dependa de una INE real.
-- **`seed.js`**: actualizar el hash precomputado al de `demo1234` (la DB real
-  de V ya usa demo1234; el hash commiteado está viejo — N1/O1 del auditor).
-- **docs/API.md** + **.env.example** (`OCR_LANG=""`).
-- **Frontend** (`alta_cliente.rs` o nuevo `kyc.rs` + `api.rs`):
-  - Tras el alta o al buscar un cliente: panel "Verificar INE" — input file
-    (accept image/*), lee bytes en wasm (js_sys/web_sys), codifica base64,
-    llama kyc; muestra resultado (curp leída, coincide/no, badge "INE
-    verificada" al lograrlo).
-  - Panel "Score por recibos": select tipo (luz/agua/teléfono) + input file +
-    botón → POST recibos → muestra score nuevo y nivel de riesgo.
-  - Búsqueda por CURP: badges "✓ Teléfono" y "✓ INE" + score/nivel visibles.
-  - `api.rs`: helpers `archivo_a_b64(bytes) -> String` (base64), `kyc_verificar`,
-    `recibo_subir`. Tests en host: `archivo_a_b64`, parseo de respuestas,
-    semáforo de estado del panel.
-  - Deps nuevas frontend: SOLO `base64 = "0.22"`.
-  - Regenerar CSS si hay clases nuevas (probable) y commitearlo.
+- **Contrato PDF**:
+  - `GET /api/creditos/{plan_id}/contrato` (protegido): genera y devuelve el
+    PDF del plan (Content-Type: application/pdf). Datos: nombre/correo de la
+    empresa (lookup `empresas` por el correo del token), nombre/CURP del
+    cliente, producto, monto total, plazo, tasa, tabla completa de pagos
+    (mes, pago, interés, capital, saldo), fecha de emisión, línea de firma y
+    leyenda mínima ("Contrato de crédito generado por PYMZA"). Plan ajeno al
+    tenant → 404. Solo planes del token.
+  - Motor: crate `printpdf` (pura Rust, sin deps de sistema), fuente
+    Helvetica base14 (latin1 — acentos OK). Generación como función pura
+    `pdf_contrato(empresa, cliente, plan) -> Vec<u8>` testeada (header
+    `%PDF`, tamaño mínimo).
+  - Dep nueva backend: SOLO `printpdf`.
+- **Hardening backend**:
+  - **CORS productivo**: `cors_layer` lee `ALLOWED_ORIGINS` (env,
+    separada por comas) con default dev actual
+    (`http://localhost:8080,http://127.0.0.1:8080`) — el techo que la ola 1
+    ya documentó.
+  - **Body limit**: `DefaultBodyLimit::max(3_000_000)` en el Router (cierra
+    E1: el handler de kyc/recibos vuelve a ser quien rechace >2MB con el 400
+    del contrato; el límite global de 3MB es la red de seguridad para el b64).
+  - **Rate limiting por IP en las rutas públicas** (`/api/login`,
+    `/api/empresas`): crate `tower-governor` (dep nueva única de esta pieza)
+    — p. ej. 10 req/60s por IP; error 429 con mensaje claro. Rutas protegidas
+    NO (ya exigen JWT). Evidencia en tests: 11ª petición → 429.
+- **Dockerfiles para Railway**:
+  - `Dockerfile.backend`: añadir `tesseract-ocr` + `tesseract-ocr-spa`
+    (E1/E2 humo) y asegurar envs (`BIND_ADDR=0.0.0.0:3000` ya está).
+  - `Dockerfile.frontend`: `ARG API_BASE` (default `http://127.0.0.1:3000`)
+    → `ENV API_BASE` antes del build WASM (la ola 2 preparó `option_env!`;
+    ahora se consume en build). `docker-compose.yml`: servicio frontend con
+    `args: API_BASE` (SOLO el servicio frontend).
+  - El humo de integración: `docker compose build` + contenedores corriendo
+    localmente contra Atlas (login real desde el frontend servido por Docker).
+- **Backups**: sin código — MongoDB Atlas los trae (backups automáticos del
+  cluster); `docs/DEPLOY.md` documenta cómo verificarlos en la UI de Atlas
+  (owner V al desplegar).
+- **Frontend**:
+  - Botón "Descargar contrato" en cada plan de cartera (y en el modal al
+    autorizar, opcional): descarga el PDF y dispara el download del
+    navegador (blob URL vía web_sys). `api.rs`:
+    `descargar_contrato(plan_id, token) -> Vec<u8>` + helper de download.
+  - Test del helper en host (payload → download event simulable o al menos
+    parseo del Content-Type/bytes).
+- **docs/DEPLOY.md** (nuevo): guía paso a paso de Railway para V — servicios
+  (backend: repo+Dockerfile, envs `MONGODB_URI`, `JWT_SECRET`,
+  `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TEMPLATE`,
+  `WHATSAPP_TEMPLATE_LANG`, `ALLOWED_ORIGINS=<dominio frontend>`,
+  `OCR_LANG=spa`; frontend: build arg `API_BASE=<url pública del backend>`),
+  dominio/puerto, cómo verificar backups de Atlas, cómo girar `JWT_SECRET`
+  (logout masivo), y troubleshooting. Cero valores reales de secretos.
+- **docs/API.md** + **.env.example** (`ALLOWED_ORIGINS`).
+- **E2 del auditor ola 5**: añadir `backend/scripts/fixture_recibo.png`
+  (imagen legible con monto, `TOTAL: $450.00 MXN` estilo fixture_ine; el
+  executor-1 verifica con tesseract que el OCR la lee y el parser extrae el
+  monto). El humo de recibos de la próxima integración usa este fixture.
 
 ### Mapa de propiedad de archivos
 
 | Archivo/glob | Dueño |
 |-----------|-------|
-| `backend/Cargo.toml`, `backend/src/**`, `backend/scripts/**`, `docs/API.md`, `.env.example` | executor-1 |
-| `frontend/src/**`, `frontend/tailwind.css`, `frontend/assets/**`, `frontend/Cargo.toml` | executor-2 |
+| `backend/Cargo.toml`, `backend/src/**`, `backend/scripts/**`, `docs/API.md`, `.env.example`, `Dockerfile.backend` | executor-1 |
+| `frontend/src/**`, `frontend/tailwind.css`, `frontend/assets/**`, `frontend/Cargo.toml` (si hiciera falta, sin deps nuevas), `Dockerfile.frontend`, `docker-compose.yml` (SOLO servicio `frontend`: build args), `docs/DEPLOY.md`, `README.md` (SOLO añadir enlace a DEPLOY.md) | executor-2 |
 
 Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/Dioxus.toml`,
-`frontend/AGENTS.md`, `AGENTS.md` (raíz), `README.md`, `docs/ROADMAP.md`,
-`docs/INVESTIGACION.md`, `PYMZA.md`, `docker-compose.yml`, `Dockerfile.*`,
-`.workflow/**`, `skills/**`, `backend/.env`.
+`frontend/AGENTS.md`, `AGENTS.md` (raíz), `docs/ROADMAP.md`,
+`docs/INVESTIGACION.md`, `docs/API.md` (dueño: executor-1), `PYMZA.md`,
+`Dockerfile.backend` (dueño: executor-1), el resto de servicios de
+`docker-compose.yml`, `.workflow/**`, `skills/**`, `backend/.env`.
 
 ### Tareas
 
-- [ ] T1 (executor-1): motor OCR (tesseract CLI) + endpoints kyc/recibos + score alternativo + fixture + seed hash → brief: `.workflow/briefs/wave5-executor-1.md`
-- [ ] T2 (executor-2): panel KYC + score por recibos + badges en frontend → brief: `.workflow/briefs/wave5-executor-2.md`
+- [ ] T1 (executor-1): contrato PDF + CORS env + body limit + rate limit + fixture_recibo + Dockerfile.backend → brief: `.workflow/briefs/wave6-executor-1.md`
+- [ ] T2 (executor-2): descarga de contrato + Dockerfile.frontend (API_BASE) + compose args + DEPLOY.md → brief: `.workflow/briefs/wave6-executor-2.md`
 
 ### Plan de integración
 
 Merges en orden (integrador): **executor-1 (backend) → executor-2 (frontend)**.
 
 ```bash
-# 0. Precondición humana/entorno: tesseract + spa en el PATH
-#    (NixOS: nix run nixpkgs#tesseract -- --version  ||  entorn o shell con tesseract-ocr-spa)
-
 # 1. Build + tests sobre el árbol integrado
 cd backend && cargo build && cargo test
-cd frontend && cargo check --target wasm32-unknown-unknown && cargo test
+cd frontend && cargo check --target wasm32-unknown-unknown && cargo test && ./tailwind.sh
 
-# 2. Humo e2e (backend contra Atlas: cd backend && cargo run; demo@pymza.mx / demo1234)
+# 2. Humo Docker (pre-Railway): los contenedores construyen y funcionan en local
+docker compose build
+docker compose up -d mongo
+# backend en contenedor con .env del host: MONGODB_URI/JWT_SECRET por env del compose
+docker compose up backend && docker compose up -d frontend
+docker run --rm $(docker compose ps -q backend) tesseract --version   # OCR presente
 TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/login \
   -H 'content-type: application/json' \
   -d '{"correo":"demo@pymza.mx","password":"demo1234"}' | jq -r .token)
-CURP="GAML930528HDFLNR05"   # del seed
-# subir INE de prueba (fixture commiteado, base64):
-B64=$(base64 -w0 backend/scripts/fixture_ine.png)
-curl -s -X POST http://127.0.0.1:3000/api/clientes/$CURP/kyc -H "Authorization: Bearer $TOKEN" \
-  -H 'content-type: application/json' \
-  -d "{\"archivo_b64\":\"$B64\",\"mime\":\"image/png\"}" | jq .
-# → coincide: true, ine_verificada: true (fixture lleva la CURP del seed)
-# subida inválida: mime=text/plain → 400; archivo >2MB → 400
-# recibos (dos veces para ver el tope): tipo luz → +25, segundo +25, tercero → 400
-curl -s http://127.0.0.1:3000/api/clientes/$CURP -H "Authorization: Bearer $TOKEN" | jq '.cliente | {score, nivel_riesgo, ine_verificada}'
+# contrato PDF de un plan del tenant (tomar _id de GET /api/creditos)
+PLAN_ID=$(curl -s http://127.0.0.1:3000/api/creditos -H "Authorization: Bearer $TOKEN" | jq -r '.creditos[0]._id')
+curl -s http://127.0.0.1:3000/api/creditos/$PLAN_ID/contrato -H "Authorization: Bearer $TOKEN" -o /tmp/contrato.pdf && head -c 8 /tmp/contrato.pdf   # → %PDF-
+curl -s http://127.0.0.1:3000/api/creditos/$PLAN_ID/contrato -o /dev/null -w "%{http_code}\n"                                                        # → 401
+# rate limit: 11 logins seguidos → el último devuelve 429
+# body limit: subir base64 de 2.5MB real → 400 con mensaje del contrato (E1 cerrada)
+docker compose down
 
-# 3. Humo UI (navegador, humano): subir INE desde la UI → badge; subir recibo →
-#    score sube; badges en búsqueda por CURP.
+# 3. Humo UI (navegador, humano): login servido por Docker, botón "Descargar
+#    contrato" baja un PDF válido y legible con la tabla de pagos.
 ```
 
 Integrador actualiza los estados de la tabla de olas tras cada paso.
 
-### Audit gate
+### Audit gate (RELEASE GATE)
 
-El auditor corre `.workflow/audit-checklist.md` sobre el árbol integrado y
-además verifica (evidencia = salida de comandos):
+El auditor corre `.workflow/audit-checklist.md` sobre el árbol integrado y,
+**por ser la ola pre-despliegue, corre además `skills/security-audit`
+(6 fases) sobre el árbol integrado**:
 
-- KYC con fixture → `coincide: true, ine_verificada: true` persiste (curl).
-- KYC con CURP distinta (path vs fixture) → `coincide: false`, NO marca
-  verificada.
-- mime inválido → 400; archivo >2MB → 400; base64 inválido → 400.
-- Recibo legible → +25 score; 3er recibo → 400 "Máximo 2"; nivel_riesgo
-  recalculado según umbrales del contrato (en vivo con score conocido).
-- `buscar_curp`/`buscar_monto` con texto ruidoso OCR → tests unitarios.
-- Tesseract ausente → 500 con mensaje claro (simulable con PATH alterado).
-- La imagen NO se persiste: no hay colección/blob con la imagen (mongosh
-  listado de colecciones).
-- Tenant scoping de `recibos` (empresa del token) y tope de 2 por cliente
-  global por curp.
-- Cero deps nuevas salvo `base64` (git diff Cargo.toml).
-- `seed.js` con hash de `demo1234` (login demo funciona: `mongosh < seed.js`
-  en DB local de prueba o verificación del hash vs password_correcta).
-- Resultado en `.workflow/audits/wave5.md`.
+- Veredicto del security-audit: cero CRITICAL/HIGH, o excepciones documentadas
+  con owner en `.workflow/audits/wave6.md`.
+- `GET /api/creditos/{plan_id}/contrato`: 200 `%PDF` con datos del tenant;
+  plan ajeno → 404; sin token → 401.
+- CORS: `ALLOWED_ORIGINS` respetado (curl con `Origin` fuera de la lista →
+  sin header de allow; dentro → header presente); default dev intacto.
+- E1 cerrada: archivo real >2MB → **400** con el mensaje del contrato (no 413).
+- Rate limit: 11º login desde la misma IP → 429 (config por env, no hardcode).
+- Docker: `docker compose build` OK; `tesseract --version` dentro de la
+  imagen backend; frontend construido con `API_BASE` inyectado (grep del
+  binario wasm o verificación de que el contenedor sirve y loguea).
+- `fixture_recibo.png`: tesseract lo lee y `buscar_monto` extrae 450.00
+  (test + comando) — E2 cerrada.
+- `docs/DEPLOY.md` sin secretos reales (scan) y con las envs listadas.
+- `ponytail:` comments donde correspondan; cero deps nuevas salvo
+  `printpdf` y `tower-governor` (git diff Cargo.toml).
+- Humo UI en navegador (owner V) queda anotado; NO bloquea el despliegue si
+  V lo valida al probar Railway.
 
 ---
 
 ## Decision log
 
-Olas 1–4 (contexto histórico; detalle en `.workflow/audits/wave1.md` … `wave4.md`):
+Olas 1–5 (contexto histórico; detalle en `.workflow/audits/wave1.md` … `wave5.md`):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
 | 2026-08-13 | Tenant key = `correo` de empresa; JWT HS256 con `JWT_SECRET` por env; exp 24h | Mínimos que funcionan; techos nombrados |
-| 2026-08-13 | App de cobradores y Tauri fuera de este plan | Productos separados; dependen de que la red esté viva |
-| 2026-08-13 | OTP por WhatsApp Cloud API (Meta); n8n se reserva para cobranza (ola 7) | Llamada directa del backend al proveedor es lo mínimo |
-| 2026-08-17 | VistaPública sin router; auto-login tras registro; default tema dark; `API_BASE` vía `option_env!` | Mínimos que funcionan |
-| 2026-08-28 | Re-segmentación 1: identidad / OCR-recibos separadas | Colisiones de archivos impedían paralelismo |
-| 2026-08-31 | Re-segmentación 2 → 7 olas; gráficas SVG puro sin librería; registrar pagos como feature raíz de gráficas; gráficas sin datos diferidas | Las gráficas de V exigen datos reales de cobranza |
-| 2026-08-31 | Verificación CURP oficial (RENAPO): no hay API pública; vías = convenio o proveedores KYC (Verificamex, JAAK, Truora) | Se integra en ola 7 con trait `VerificadorCurp`; hoy la redundancia es dígito verificador + OTP + OCR INE |
-| 2026-09-04 | Ola 3 APPROVED (D1 dv seed, D2 OnceLock) y ola 4 APPROVED (pagos, gráficas, plantilla WhatsApp, TTL) | Auditors en fresco; N1-N3 informativas (huella de humo N3 → owner V) |
-| 2026-09-04 | Credenciales demo real: `demo@pymza.mx` / `demo1234` (V re-seedeó); docs actualizadas; seed.js hash viejo → lo actualiza executor-1 ola 5 | Alinea repo con la DB real |
+| 2026-08-13 | App de cobradores y Tauri fuera de este plan | Productos separados |
+| 2026-08-13 | OTP por WhatsApp Cloud API (Meta); n8n se reserva para cobranza (ola 7) | Mínimo que funciona |
+| 2026-08-17 | VistaPública sin router; auto-login; default tema dark; `API_BASE` vía `option_env!` | Mínimos que funcionan |
+| 2026-08-28 | Re-segmentación 1: identidad / OCR-recibos separadas | Colisiones de archivos |
+| 2026-08-31 | Re-segmentación 2 → 7 olas; SVG puro; registrar pagos como feature raíz de gráficas; verificación RENAPO vía proveedor (ola 7) | Datos reales > decoración |
+| 2026-09-04/05 | Olas 3-4 APPROVED; ola 5 APPROVED WITH EXCEPTIONS (E1 413, E2 fixture → owners planner ola 6) | Auditorías en fresco con evidencia |
+| 2026-09-04 | Motor OCR = binario tesseract; subida base64 en JSON; imagen no persistida; score recibos heurística v1 (+25, máx 2) | Ponytail con techos nombrados |
 
-Ola 5 (nuevas):
+Ola 6 (nuevas):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
-| 2026-09-04 | Motor OCR = binario `tesseract` como proceso hijo (con timeout 30s), cero deps Rust para el motor | La escalera: ya existe en el sistema (nixpkgs) y el Docker de la ola 6 lo instala; enlazar libtesseract en Rust añade complejidad de build sin valor hoy |
-| 2026-09-04 | Subida de archivos = base64 en JSON (no multipart) | Única forma portable con reqwest/wasm; INE/recibo son pequeños (<2MB); trust boundary valida mime + tamaño ANTES de decodificar |
-| 2026-09-04 | La imagen NO se guarda (privacy by design) | Solo persiste el resultado (verificación + metadatos); menos datos sensibles en Atlas. Techo: guardar si regulación/negocio lo pide |
-| 2026-09-04 | Score por recibos: heurística v1 (+25 por recibo legible, máx 2, nivel por umbrales 750/550) | El score alternativo real exige historial de pagos (open banking, ola 7); la heurística ya da señal usable y es transparente |
-| 2026-09-04 | Fixture `fixture_ine.png` commiteado para el humo | El humo de integración no depende de una INE real; determinista y reproducible |
-| 2026-09-05 | Ola 5 APPROVED WITH EXCEPTIONS (auditor en fresco): E1 (>2MB → 413 por body-limit de Axum, no el 400 del contrato — handler entra por b64 ≤2MB body; fix con `DefaultBodyLimit` o doc del 413) y E2 (fixture_ine.png produce 40 chars OCR <50 → no sirve para el humo de recibos; flujo de recibos verificado en vivo con imagen sintética: +25, tope 2, nivel recalculado) — ambos owner planner ola 6. N1 (imagen corrupta → 500 "OCR no disponible" en vez de 400) y N2 (tope de recibos sin atomicidad count+insert) informativas | El rechazo >2MB es equivalente en seguridad; el código de recibos funciona end-to-end (evidencia en .workflow/audits/wave5.md). E1/E2 caen en el alcance natural de la ola 6 (tower-http/rate-limit, Docker del humo) |
+| 2026-09-05 | Contrato PDF con `printpdf` + Helvetica base14 (latin1: acentos OK), bajo demanda (`GET por plan_id`) | Pura Rust sin deps de sistema; el PDF se regenera siempre desde datos vivos, no se almacena. Techo: firma electrónica/logo si el negocio lo pide |
+| 2026-09-05 | CORS por env `ALLOWED_ORIGINS` (default dev) | El techo documentado desde la ola 1; Railway inyecta el dominio del frontend |
+| 2026-09-05 | `DefaultBodyLimit::max(3MB)` global — cierra E1 (413→400 del contrato) | El handler vuelve a ser quien rechaza con el 400 y mensaje del contrato; el límite global queda como red de seguridad |
+| 2026-09-05 | Rate limit por IP (tower-governor) SOLO en rutas públicas (login, empresas) | Las protegidas ya exigen JWT; el brute-force solo es posible en las públicas. Techo: extender a OTP si se abusa |
+| 2026-09-05 | Backups = feature de Atlas (sin código); DEPLOY.md documenta la verificación | No reimplementar lo que el proveedor trae |
+| 2026-09-05 | El despliegue a Railway lo ejecuta V con `docs/DEPLOY.md` DESPUÉS del release gate | V tiene la cuenta y las credenciales; el release gate (security audit) corre antes de exponer nada |
+| 2026-09-05 | E2 cerrada con `fixture_recibo.png` nuevo | El humo de recibos queda reproducible sin imagen sintética ad-hoc |
