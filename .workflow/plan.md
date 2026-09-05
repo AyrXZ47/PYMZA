@@ -44,7 +44,7 @@ Constraints:
 | 2 | Portal público: landing que venda, registro/login separados, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
 | 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED) |
 | 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] auditada 2026-09-04 (APPROVED; N1-N3 informativas) |
-| 5 | KYC/OCR real (subida de archivos, tesseract) + score alternativo por recibos de servicios | [x] integrada 2026-09-04 (build+tests OK; humo: kyc OK, mime/b64 400 OK; pendiente auditor: fixture produce <50 chars OCR → recibos sin bonus/tope, y >2MB da 413 por body-limit de Axum) |
+| 5 | KYC/OCR real (subida de archivos, tesseract) + score alternativo por recibos de servicios | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS; E1 >2MB→413, E2 fixture no sirve para recibos — owner ola 6; humo UI pendiente de V) |
 | 6 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
@@ -233,3 +233,4 @@ Ola 5 (nuevas):
 | 2026-09-04 | La imagen NO se guarda (privacy by design) | Solo persiste el resultado (verificación + metadatos); menos datos sensibles en Atlas. Techo: guardar si regulación/negocio lo pide |
 | 2026-09-04 | Score por recibos: heurística v1 (+25 por recibo legible, máx 2, nivel por umbrales 750/550) | El score alternativo real exige historial de pagos (open banking, ola 7); la heurística ya da señal usable y es transparente |
 | 2026-09-04 | Fixture `fixture_ine.png` commiteado para el humo | El humo de integración no depende de una INE real; determinista y reproducible |
+| 2026-09-05 | Ola 5 APPROVED WITH EXCEPTIONS (auditor en fresco): E1 (>2MB → 413 por body-limit de Axum, no el 400 del contrato — handler entra por b64 ≤2MB body; fix con `DefaultBodyLimit` o doc del 413) y E2 (fixture_ine.png produce 40 chars OCR <50 → no sirve para el humo de recibos; flujo de recibos verificado en vivo con imagen sintética: +25, tope 2, nivel recalculado) — ambos owner planner ola 6. N1 (imagen corrupta → 500 "OCR no disponible" en vez de 400) y N2 (tope de recibos sin atomicidad count+insert) informativas | El rechazo >2MB es equivalente en seguridad; el código de recibos funciona end-to-end (evidencia en .workflow/audits/wave5.md). E1/E2 caen en el alcance natural de la ola 6 (tower-http/rate-limit, Docker del humo) |
