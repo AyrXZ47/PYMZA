@@ -40,7 +40,7 @@ Autentica una empresa (correo + password) y devuelve un JWT real.
 ```json
 {
   "correo": "demo@pymza.mx",
-  "password": "demo123"
+  "password": "demo1234"
 }
 ```
 

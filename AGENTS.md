@@ -64,7 +64,7 @@ docker compose up -d
 # o en NixOS sin docker (mongodb del módulo rust-dev de nixos-config):
 mongod --dbpath ~/.mongo-data --bind_ip 127.0.0.1 --port 27017
 
-# Seed demo (una vez por base nueva) — empresa: demo@pymza.mx / demo123
+# Seed demo (una vez por base nueva) — empresa: demo@pymza.mx / demo1234
 mongosh < backend/scripts/seed.js
 
 cd backend && MONGODB_URI=... cargo run  # Backend on 127.0.0.1:3000

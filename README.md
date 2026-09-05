@@ -35,7 +35,7 @@ docker compose up -d
 #    MongoDB — opción B (NixOS, mongod directo)
 mongod --dbpath ~/.mongo-data --bind_ip 127.0.0.1 --port 27017
 
-# 2. Seed demo (una vez por base nueva) — empresa: demo@pymza.mx / demo123
+# 2. Seed demo (una vez por base nueva) — empresa: demo@pymza.mx / demo1234
 mongosh < backend/scripts/seed.js
 
 # 3. Backend (http://127.0.0.1:3000)

@@ -23,8 +23,8 @@ de crédito esté viva. Tauri/escritorio: el producto es web primero.
 |---|---|
 | Frontend | Dioxus 0.7.9 (pin `=0.7.9`) Rust → WASM + Tailwind v4. `frontend/AGENTS.md` es la referencia API obligatoria |
 | Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs` (JWT HS256), `otp.rs` |
-| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones` (+ `pagos` desde ola 4) |
-| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 6) |
+| DB | MongoDB Atlas (real) vía `MONGODB_URI` en `backend/.env` (gitignored). DB: `pymza`; colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`, `pagos` (+ `recibos` desde ola 5) |
+| Infra | Docker Compose existente; despliegue objetivo: Railway (ola 6; Dockerfile.backend instalará `tesseract-ocr` + `tesseract-ocr-spa`) |
 
 Constraints:
 - Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC, KYC) solo en `.env` local.
@@ -32,7 +32,9 @@ Constraints:
 - NixOS: `dx` no compila Tailwind; el CSS compilado (`frontend/assets/tailwind.css`) está commiteado. Si una ola cambia clases Tailwind, regenerar con `frontend/tailwind.sh` y commitear el CSS.
 - Sin CI. Verificación disponible: `cargo test` (backend y frontend nativo) + `cargo check --target wasm32-unknown-unknown` (frontend WASM).
 - Backend necesita librerías dev de OpenSSL para compilar (driver mongodb con `openssl-tls`).
+- OCR (ola 5): motor = binario `tesseract` invocado como proceso hijo (cero deps Rust); requiere `tesseract` + traineddata `spa` en el entorno (NixOS: `nix run nixpkgs#tesseract -- --version` para verificar; si falta, los endpoints devuelven error claro 500 "OCR no disponible").
 - Release gate (ola 6): `skills/security-audit` con cero CRITICAL/HIGH antes de producción.
+- Demo real en Atlas: `demo@pymza.mx` / `demo1234` (V re-seedeó 2026-09-04; docs actualizadas por planner).
 
 ## Waves
 
@@ -40,131 +42,144 @@ Constraints:
 |-----|------|--------|
 | 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 |
 | 2 | Portal público: landing que venda, registro/login separados, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
-| 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED; D1/D2 aprobadas; O1-O3 observaciones con owner) |
-| 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] integrada 2026-09-04 (build+tests verdes; auditoría pendiente) |
-| 5 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
+| 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED) |
+| 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] auditada 2026-09-04 (APPROVED; N1-N3 informativas) |
+| 5 | KYC/OCR real (subida de archivos, tesseract) + score alternativo por recibos de servicios | [x] planificada (EN CURSO) |
 | 6 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
-> Re-segmentaciones documentadas en el decision log (2026-08-28 y 2026-08-31).
+> Re-segmentaciones documentadas en el decision log (2026-08-28, 2026-08-31).
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
 > Actualizar después de cada paso, quien lo ejecute.
 
 ---
 
-## Ola 4 (actual): cartera viva — pagos, gráficas de impacto, favicon
+## Ola 5 (actual): KYC/OCR real + score alternativo por recibos
 
-Contexto: la ola 3 quedó APPROVED. V pidió (2026-08-31): gráficas de impacto
-bajo los KPIs del dashboard (captura con 3 tiers de gráficas) y favicon/logo
-en la pestaña del navegador.
+Contexto: la red de clientes ya verifica teléfono por OTP (ola 3) y la
+cartera vive con pagos reales y gráficas (ola 4). Faltan las dos señales de
+confianza que hacen al pitch de PYMZA: **la INE subida es real y coincide**
+(KYC) y **el cliente sin buró obtiene score por sus recibos de servicios**
+(motor de datos alternativos — idea original de PYMZA.md).
 
-**Hallazgo de planificación**: hoy el sistema NO registra pagos —
-`autorizar` inserta el plan con `estado: "Activo"` fijo y jamás cambia. Sin
-pagos registrados, "cobrado" siempre es 0 y la morosidad es pura proyección:
-las gráficas de V dirían mentiras. Por eso la feature raíz de esta ola es el
-**registro de pagos** (el corazón del pitch PYMZA es la cobranza); las
-gráficas son su consecuencia visible.
+Decisiones de diseño (ponytail, razones en decision log):
+- Motor OCR = **binario `tesseract`** invocado como proceso hijo con timeout
+  (cero deps Rust para el motor; Docker lo instalará en la ola 6).
+- Subida = **base64 en JSON** (no multipart): reqwest/wasm en el frontend es
+  la única forma portable; archivos de INE/recibo son pequeños.
+- **La imagen NO se guarda** (privacy by design): solo el resultado de la
+  verificación. Techo: guardar si el negocio o regulación lo piden.
+- Score por recibos = heurística v1: +25 por recibo legible (máx 2 recibos).
+  El score alternativo real (historial de pagos de servicios) exige open
+  banking — ola 7.
 
-### Contrato API ola 4 (ambos executors implementan contra ESTO)
+### Contrato API ola 5 (ambos executors implementan contra ESTO)
 
-- **Colección `pagos`** (nueva): `{ plan_id (ObjectId del plan, como hex),
-  empresa (correo del token), cliente_curp, cuota (1..=plazo_meses), monto,
-  fecha (UTC) }`.
-- **`POST /api/creditos/pagos`** (protegido): body `{ plan_id, cuota, monto }`.
-  Valida: plan existe y `plan.empresa == correo del token`; cuota en
-  `1..=plazo_meses`; cuota no pagada ya (400 si duplicada); monto igual a
-  `pago_mensual` del plan con tolerancia de 1 centavo (400 con mensaje claro).
-  Inserta el pago, recalcula el estado del plan y responde
-  `{status: "success", plan: {...}}`.
-- **Estados del plan** (recalculados tras cada pago): `Liquidado` (todas las
-  cuotas pagadas), `Moroso` (≥1 cuota vencida no pagada: vencimiento de la
-  cuota n = `fecha` del plan + n meses, antes de hoy), `Activo` (resto).
-  `autorizar` sigue creando con "Activo".
-- **`GET /api/creditos`** (existe): cada plan gana `cuotas_pagadas` y
-  `cuotas_vencidas` (calculadas en servidor) para que el frontend solo dibuje.
-- **`GET /api/creditos/resumen`** (nuevo, protegido, tenant del token):
-  `{status: "success", resumen: {...}}` con EXACTAMENTE esta shape:
-  - `cobrado_vs_por_cobrar`: `[{mes: "2026-09", cobrado, por_cobrar}]` — 6
-    meses (el mes actual + 5 previos). cobrado = pagos registrados del mes;
-    por_cobrar = cuotas esperadas de ese mes en planes no liquidados.
-  - `tasa_morosidad`: f64 0..1 = planes Moroso / planes no liquidados.
-  - `flujo_proyectado`: `[{horizonte: 30, monto}, {60, ...}, {90, ...}]` —
-    cuotas que vencen en los próximos 30/60/90 días de planes Activo/Moroso.
-  - `aging`: `[{bucket: "0-30", monto}, {"31-60"}, {"61-90"}, {"90+"}]` —
-    saldo vencido por antigüedad de la cuota (días desde su vencimiento).
-  - `top_deudores`: `[{cliente_curp, nombre, saldo}]` — saldo = total a pagar
-    (pago_mensual × plazo) − pagos registrados, desc, máx 10 (join con
-    `clientes` para el nombre).
-  - `distribucion_montos`: `[{bucket: "0-1k", n}, {"1k-5k"}, {"5k+"}]` — n de
-    planes por `monto_total`.
-- **`dashboard_stats`** (upsert existente): `creditos_activos` = planes
-  Activo+Moroso; `proximos_cobros` = cuotas que vencen en 30 días. Sin
-  romper el shape actual.
-- **WhatsApp plantilla de autenticación**: `WhatsAppOtpSender` deja de mandar
-  mensaje libre y envía PLANTILLA (fuera de la ventana de 24 h solo pasan
-  plantillas): `template: {name: env WHATSAPP_TEMPLATE (default
-  "pymza_otp_verification"), language: {code: env WHATSAPP_TEMPLATE_LANG
-  (default "es")}, components: [{type: "body", parameters: [{type: "text",
-  text: codigo}]}]}`. Si el envío falla → eprintln y continuar (el flujo de
-  dev con mock no se rompe). `WHATSAPP_WABA_ID` NO se usa para enviar (solo
-  gestión) — no agregarlo al código sin motivo.
-- **TTL index** (O2 del auditor ola 3): crear índice TTL (`expireAfterSeconds:
-  0`) sobre `verificaciones.expira_en` (lazy, al construir el cliente DB o al
-  primer `solicitar`).
-- Deps nuevas: **NINGUNA**. Las gráficas son SVG puro en rsx.
-
-### Gráficas diferidas (sin datos que las soporten hoy — decision log)
-
-De la captura de V: "Ventas a crédito vs contado" (no existe captura de
-ventas contado), "Tendencia de recuperación mensual" (necesita ≥2 meses de
-pagos reales), "Intereses generados vs pérdidas por impago" (falta marcar
-impagos), "Score de salud de cartera" (KPI compuesto, cuando Tier 1-2
-maduren), "Predicción de incobrables ML" (ponytail: regresión simple con ≥6
-meses de datos; ML real no se justifica hoy), "Costo de oportunidad"
-(derivado).
+- **`Cliente`** gana `ine_verificada: bool` (default false, como los campos de
+  la ola 3 — clientes previos los leen con default).
+- **`POST /api/clientes/:curp/kyc`** (protegido): body
+  `{archivo_b64: String, mime: String}`. Validaciones (trust boundary, en
+  orden): cliente existe y pertenece a la red (404 si no); mime ∈
+  {image/png, image/jpeg, image/webp} (400); tamaño decodificado ≤ 2 MB (400).
+  Decodifica, corre tesseract (timeout 30s, idioma env `OCR_LANG` default
+  "spa"), extrae la CURP del texto con la regex del formato CURP (función
+  pura testada con texto ruidoso de OCR). Compara con el `curp` del path.
+  Marca `ine_verificada = true` si coincide. Respuesta:
+  `{status: "success", curp_ine: <string|null>, nombre_ine: <string|null>,
+  coincide: bool, ine_verificada: bool}`. Si tesseract no está instalado o
+  falla → 500 `{status:"error", message:"OCR no disponible en este
+  servidor"}` sin panickear. Si no se encuentra CURP en el texto → success
+  con `curp_ine: null, coincide: false` y mensaje.
+- **`POST /api/clientes/:curp/recibos`** (protegegido): body
+  `{archivo_b64, mime, tipo: "luz"|"agua"|"telefono"}` (tipo invalidado 400;
+  mime/tamaño igual que kyc). OCR extrae el monto (regex `$`/pesos, función
+  pura testada). Inserta en colección `recibos`:
+  `{curp, empresa (correo del token), tipo, monto_leido (f64|null), fecha}`.
+  Si el recibo es legible (monto encontrado o texto ≥50 chars), aplica bonus
+  de score: `score += 25`, máximo 2 recibos por cliente (query a `recibos`;
+  si ya hay 2 → 400 "Máximo 2 recibos por cliente"). Recalcula
+  `nivel_riesgo` con función pura `nivel_por_score(score)`:
+  `>=750 "Bajo"`, `>=550 "Medio"`, `<550 "Alto"` (tests). Actualiza el
+  cliente. Respuesta:
+  `{status: "success", monto_leido: <f64|null>, score, nivel_riesgo,
+  recibos_contados: n}`.
+- **`GET /api/clientes/:curp`** ya serializa los campos nuevos
+  (`ine_verificada`) — el frontend solo dibuja.
+- **`backend/src/ocr.rs`** (nuevo): `extraer_texto(bytes, mime) ->
+  Result<String>` (escribe temp file, corre `tesseract <file> stdout -l
+  $OCR_LANG --psm 6` con `tokio::process::Command` + timeout, borra temp),
+  `buscar_curp(&str) -> Option<String>` (regex, función pura),
+  `buscar_monto(&str) -> Option<f64>` (regex, función pura). El binario
+  `tesseract` se busca en PATH; si no existe → error "OCR no disponible".
+- **Deps nuevas backend: SOLO `base64 = "0.22"`.** Cero otras.
+- **Fixture de prueba** (nuevo): `backend/scripts/fixture_ine.png` — imagen
+  (PNG, ~600×400) con texto grande y legible que incluya una CURP válida
+  (dígito verificador real, ej. una del seed) y un nombre. La genera el
+  executor-1 en su worktree (la herramienta que prefiera) y se commitea, para
+  que el humo de integración no dependa de una INE real.
+- **`seed.js`**: actualizar el hash precomputado al de `demo1234` (la DB real
+  de V ya usa demo1234; el hash commiteado está viejo — N1/O1 del auditor).
+- **docs/API.md** + **.env.example** (`OCR_LANG=""`).
+- **Frontend** (`alta_cliente.rs` o nuevo `kyc.rs` + `api.rs`):
+  - Tras el alta o al buscar un cliente: panel "Verificar INE" — input file
+    (accept image/*), lee bytes en wasm (js_sys/web_sys), codifica base64,
+    llama kyc; muestra resultado (curp leída, coincide/no, badge "INE
+    verificada" al lograrlo).
+  - Panel "Score por recibos": select tipo (luz/agua/teléfono) + input file +
+    botón → POST recibos → muestra score nuevo y nivel de riesgo.
+  - Búsqueda por CURP: badges "✓ Teléfono" y "✓ INE" + score/nivel visibles.
+  - `api.rs`: helpers `archivo_a_b64(bytes) -> String` (base64), `kyc_verificar`,
+    `recibo_subir`. Tests en host: `archivo_a_b64`, parseo de respuestas,
+    semáforo de estado del panel.
+  - Deps nuevas frontend: SOLO `base64 = "0.22"`.
+  - Regenerar CSS si hay clases nuevas (probable) y commitearlo.
 
 ### Mapa de propiedad de archivos
 
 | Archivo/glob | Dueño |
 |-----------|-------|
 | `backend/Cargo.toml`, `backend/src/**`, `backend/scripts/**`, `docs/API.md`, `.env.example` | executor-1 |
-| `frontend/src/**`, `frontend/Dioxus.toml` (solo title/favicon), `frontend/tailwind.css`, `frontend/assets/**` | executor-2 |
+| `frontend/src/**`, `frontend/tailwind.css`, `frontend/assets/**`, `frontend/Cargo.toml` | executor-2 |
 
-Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/AGENTS.md`,
-`frontend/Cargo.toml` (cero deps), `AGENTS.md` (raíz), `README.md`,
-`docs/ROADMAP.md`, `docs/INVESTIGACION.md`, `PYMZA.md`, `docker-compose.yml`,
-`Dockerfile.*`, `.workflow/**`, `skills/**`, `backend/.env`.
+Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/Dioxus.toml`,
+`frontend/AGENTS.md`, `AGENTS.md` (raíz), `README.md`, `docs/ROADMAP.md`,
+`docs/INVESTIGACION.md`, `PYMZA.md`, `docker-compose.yml`, `Dockerfile.*`,
+`.workflow/**`, `skills/**`, `backend/.env`.
 
 ### Tareas
 
-- [x] T1 (executor-1): pagos + estados de plan + resumen para gráficas + plantilla WhatsApp + TTL → brief: `.workflow/briefs/wave4-executor-1.md`
-- [x] T2 (executor-2): primitivas SVG + 6 gráficas en dashboard + registrar pago en cartera + favicon/título → brief: `.workflow/briefs/wave4-executor-2.md`
+- [ ] T1 (executor-1): motor OCR (tesseract CLI) + endpoints kyc/recibos + score alternativo + fixture + seed hash → brief: `.workflow/briefs/wave5-executor-1.md`
+- [ ] T2 (executor-2): panel KYC + score por recibos + badges en frontend → brief: `.workflow/briefs/wave5-executor-2.md`
 
 ### Plan de integración
 
 Merges en orden (integrador): **executor-1 (backend) → executor-2 (frontend)**.
 
 ```bash
+# 0. Precondición humana/entorno: tesseract + spa en el PATH
+#    (NixOS: nix run nixpkgs#tesseract -- --version  ||  entorn o shell con tesseract-ocr-spa)
+
 # 1. Build + tests sobre el árbol integrado
 cd backend && cargo build && cargo test
 cd frontend && cargo check --target wasm32-unknown-unknown && cargo test
 
-# 2. Humo e2e (backend contra Atlas: cd backend && cargo run)
+# 2. Humo e2e (backend contra Atlas: cd backend && cargo run; demo@pymza.mx / demo1234)
 TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/login \
   -H 'content-type: application/json' \
-  -d '{"correo":"nueva@empresa.mx","password":"nueva123"}' | jq -r .token)
-# crear un plan de prueba (evaluar + autorizar) y tomar su _id de GET /api/creditos
-PLAN_ID=$(curl -s http://127.0.0.1:3000/api/creditos -H "Authorization: Bearer $TOKEN" | jq -r '.creditos[0]._id')
-curl -s -X POST http://127.0.0.1:3000/api/creditos/pagos -H "Authorization: Bearer $TOKEN" \
+  -d '{"correo":"demo@pymza.mx","password":"demo1234"}' | jq -r .token)
+CURP="GAML930528HDFLNR05"   # del seed
+# subir INE de prueba (fixture commiteado, base64):
+B64=$(base64 -w0 backend/scripts/fixture_ine.png)
+curl -s -X POST http://127.0.0.1:3000/api/clientes/$CURP/kyc -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d "{\"plan_id\":\"$PLAN_ID\",\"cuota\":1,\"monto\":<pago_mensual del plan>}" | jq .
-# duplicado → 400; cuota 2 de un plan de 12 → estado sigue Activo; pagar todas → Liquidado
-curl -s http://127.0.0.1:3000/api/creditos/resumen -H "Authorization: Bearer $TOKEN" | jq .resumen.tasa_morosidad
-curl -s http://127.0.0.1:3000/api/creditos/resumen -H "Authorization: Bearer TOKEN_INVENTADO" -o /dev/null -w "%{http_code}\n"   # → 401
+  -d "{\"archivo_b64\":\"$B64\",\"mime\":\"image/png\"}" | jq .
+# → coincide: true, ine_verificada: true (fixture lleva la CURP del seed)
+# subida inválida: mime=text/plain → 400; archivo >2MB → 400
+# recibos (dos veces para ver el tope): tipo luz → +25, segundo +25, tercero → 400
+curl -s http://127.0.0.1:3000/api/clientes/$CURP -H "Authorization: Bearer $TOKEN" | jq '.cliente | {score, nivel_riesgo, ine_verificada}'
 
-# 3. Humo UI (navegador, humano): gráficas bajo los KPIs, badge de estado en
-#    cartera, registrar pago desde UI, favicon visible en la pestaña, título
-#    "PYMZA" en la pestaña.
+# 3. Humo UI (navegador, humano): subir INE desde la UI → badge; subir recibo →
+#    score sube; badges en búsqueda por CURP.
 ```
 
 Integrador actualiza los estados de la tabla de olas tras cada paso.
@@ -174,48 +189,47 @@ Integrador actualiza los estados de la tabla de olas tras cada paso.
 El auditor corre `.workflow/audit-checklist.md` sobre el árbol integrado y
 además verifica (evidencia = salida de comandos):
 
-- Pago duplicado → 400; pago de cuota inexistente → 400; monto ≠ pago_mensual
-  → 400; plan ajeno (otro tenant) → 404/403 (curl en vivo).
-- Plan con todas las cuotas pagadas → `Liquidado`; plan con cuota vencida sin
-  pagar → `Moroso` (en vivo, con fechas manipuladas o plan antiguo).
-- `GET /api/creditos/resumen` es tenant-scoped: con 2 tenants, los datos no
-  cruzan (en vivo).
-- Shape del resumen exacto al contrato (jq por cada campo).
-- Plantilla WhatsApp: test del payload builder; sin token el envío falla suave
-  (log, no panic); `WHATSAPP_TEMPLATE` default correcto.
-- TTL index en `verificaciones` (`mongosh` → `getIndexes()` muestra
-  `expireAfterSeconds`).
-- Favicon: `frontend/assets/favicon.svg` existe, referenciado en `main.rs`
-  (`rel: "icon"`), `Dioxus.toml` title ≠ "frontend".
-- Cero deps nuevas (`git diff <base> -- **/Cargo.toml` vacío).
-- Nada fuera del mapa de propiedad (`git log --stat` por rama).
-- Resultado en `.workflow/audits/wave4.md`.
+- KYC con fixture → `coincide: true, ine_verificada: true` persiste (curl).
+- KYC con CURP distinta (path vs fixture) → `coincide: false`, NO marca
+  verificada.
+- mime inválido → 400; archivo >2MB → 400; base64 inválido → 400.
+- Recibo legible → +25 score; 3er recibo → 400 "Máximo 2"; nivel_riesgo
+  recalculado según umbrales del contrato (en vivo con score conocido).
+- `buscar_curp`/`buscar_monto` con texto ruidoso OCR → tests unitarios.
+- Tesseract ausente → 500 con mensaje claro (simulable con PATH alterado).
+- La imagen NO se persiste: no hay colección/blob con la imagen (mongosh
+  listado de colecciones).
+- Tenant scoping de `recibos` (empresa del token) y tope de 2 por cliente
+  global por curp.
+- Cero deps nuevas salvo `base64` (git diff Cargo.toml).
+- `seed.js` con hash de `demo1234` (login demo funciona: `mongosh < seed.js`
+  en DB local de prueba o verificación del hash vs password_correcta).
+- Resultado en `.workflow/audits/wave5.md`.
 
 ---
 
 ## Decision log
 
-Olas 1–3 (contexto histórico; detalle en `.workflow/audits/wave1.md`,
-`wave2.md`, `wave3.md`):
+Olas 1–4 (contexto histórico; detalle en `.workflow/audits/wave1.md` … `wave4.md`):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
-| 2026-08-13 | Tenant key = `correo` de empresa, no ObjectId nuevo | Ya es único y validado; docs existentes se migran con script |
-| 2026-08-13 | JWT HS256 (`jsonwebtoken` v9), secret por env, exp 24h | Lo mínimo que funciona; techo: refresh tokens + httpOnly cookies |
+| 2026-08-13 | Tenant key = `correo` de empresa; JWT HS256 con `JWT_SECRET` por env; exp 24h | Mínimos que funcionan; techos nombrados |
 | 2026-08-13 | App de cobradores y Tauri fuera de este plan | Productos separados; dependen de que la red esté viva |
-| 2026-08-13 | OTP por WhatsApp: proveedor objetivo = WhatsApp Cloud API (Meta) | Llamada directa del backend al proveedor es lo mínimo que funciona |
-| 2026-08-17 | VistaPública sin router; auto-login tras registro; default tema dark; `API_BASE` vía `option_env!` | Mínimos que funcionan, techos nombrados |
-| 2026-08-28 | Re-segmentación 1: identidad (3) separada de OCR/recibos (4) | Colisiones en main.rs/Cargo.toml/models impedían paralelismo |
-| 2026-08-31 | Ola 3 APPROVED. D1: CURPs del seed corregidas a dv reales (05/02). D2: `OtpSender` por `OnceLock` global | Auditor aprobó ambas; techo documentado |
-| 2026-08-31 | Observaciones ola 3: O1 hash demo roto (owner V: re-seed), O2 TTL pendiente (→ ola 4), O3 datos de humo en Atlas (owner V) | O2 se resuelve en esta ola |
+| 2026-08-13 | OTP por WhatsApp Cloud API (Meta); n8n se reserva para cobranza (ola 7) | Llamada directa del backend al proveedor es lo mínimo |
+| 2026-08-17 | VistaPública sin router; auto-login tras registro; default tema dark; `API_BASE` vía `option_env!` | Mínimos que funcionan |
+| 2026-08-28 | Re-segmentación 1: identidad / OCR-recibos separadas | Colisiones de archivos impedían paralelismo |
+| 2026-08-31 | Re-segmentación 2 → 7 olas; gráficas SVG puro sin librería; registrar pagos como feature raíz de gráficas; gráficas sin datos diferidas | Las gráficas de V exigen datos reales de cobranza |
+| 2026-08-31 | Verificación CURP oficial (RENAPO): no hay API pública; vías = convenio o proveedores KYC (Verificamex, JAAK, Truora) | Se integra en ola 7 con trait `VerificadorCurp`; hoy la redundancia es dígito verificador + OTP + OCR INE |
+| 2026-09-04 | Ola 3 APPROVED (D1 dv seed, D2 OnceLock) y ola 4 APPROVED (pagos, gráficas, plantilla WhatsApp, TTL) | Auditors en fresco; N1-N3 informativas (huella de humo N3 → owner V) |
+| 2026-09-04 | Credenciales demo real: `demo@pymza.mx` / `demo1234` (V re-seedeó); docs actualizadas; seed.js hash viejo → lo actualiza executor-1 ola 5 | Alinea repo con la DB real |
 
-Ola 4 (nuevas):
+Ola 5 (nuevas):
 
 | Fecha | Decisión | Por qué |
 |------|----------|-----|
-| 2026-08-31 | Re-segmentación 2 → 7 olas: ola 4 = pagos + gráficas + favicon (pedido directo de V); 5 = OCR/recibos; 6 = contrato PDF + producción + release gate; 7 = Stripe + ecosistema | Las gráficas de V exigen datos reales de cobranza; registrar pagos es la feature raíz que las desbloquea |
-| 2026-08-31 | Las gráficas son SVG puro en rsx (bar/line/donut/hbar), cero librería de charts | Sin deps nuevas; primitivas de 3 tipos cubren las 6 gráficas. Techo: librería si se necesita interactividad avanzada (tooltips/zoom) |
-| 2026-08-31 | Estados de plan con ciclo de vida real: Activo → Moroso (cuota vencida sin pagar) → Liquidado (todo pagado) | Hoy "Activo" es fijo; sin esto la morosidad y el aging son mentira |
-| 2026-08-31 | Gráficas diferidas: ventas crédito/contado, tendencia de recuperación, intereses vs pérdidas, score de salud, predicción ML, costo de oportunidad | No hay datos reales que las soporten (no se registran ventas contado ni impagos; ML con <6 meses de pagos es decoración) — se activan cuando existan |
-| 2026-08-31 | WhatsApp: envío por PLANTILLA de autenticación (nombre por env `WHATSAPP_TEMPLATE`), no mensaje libre | Fuera de la ventana de 24h Meta solo permite plantillas; V creará `pymza_otp_verification` cuando la verificación de Meta Business se apruebe (en curso, SLA 24-48h) |
-| 2026-08-31 | Verificación CURP oficial (RENAPO): no existe API pública; vías = convenio RENAPO directo (trámite legal) o proveedores KYC comerciales con API (Verificamex, JAAK, Truora, etc., pago por consulta, hay prueba gratis) | Se integra en la ola 7 con trait `VerificadorCurp` (mismo patrón que `OtpSender`: mock hoy, proveedor cuando V firme); hoy la redundancia es dígito verificador + OTP + OCR INE (ola 5) |
+| 2026-09-04 | Motor OCR = binario `tesseract` como proceso hijo (con timeout 30s), cero deps Rust para el motor | La escalera: ya existe en el sistema (nixpkgs) y el Docker de la ola 6 lo instala; enlazar libtesseract en Rust añade complejidad de build sin valor hoy |
+| 2026-09-04 | Subida de archivos = base64 en JSON (no multipart) | Única forma portable con reqwest/wasm; INE/recibo son pequeños (<2MB); trust boundary valida mime + tamaño ANTES de decodificar |
+| 2026-09-04 | La imagen NO se guarda (privacy by design) | Solo persiste el resultado (verificación + metadatos); menos datos sensibles en Atlas. Techo: guardar si regulación/negocio lo pide |
+| 2026-09-04 | Score por recibos: heurística v1 (+25 por recibo legible, máx 2, nivel por umbrales 750/550) | El score alternativo real exige historial de pagos (open banking, ola 7); la heurística ya da señal usable y es transparente |
+| 2026-09-04 | Fixture `fixture_ine.png` commiteado para el humo | El humo de integración no depende de una INE real; determinista y reproducible |

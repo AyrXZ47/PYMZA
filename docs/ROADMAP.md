@@ -9,7 +9,7 @@ Consolidación del checklist de visión de [`PYMZA.md`](../PYMZA.md) con el esta
 | Visión (PYMZA.md) | Estado real | Evidencia | Tarea en plan |
 |---|---|---|---|
 | Alta de empresas con contraseña | Hecho (backend); registro UI con auto-login en ola 2 | `POST /api/empresas` (valida correo/contraseña, evita duplicados); UI de registro propia + auto-login en curso (ola 2, executor-1) | T-07 (alta empresas), T-11 (hashing); ola 2 (registro UI) |
-| Hashing de contraseñas | Hecho | `hashear_password`/`password_correcta` con argon2id (PHC); seed con hash precomputado de `demo123`; tests en `backend/src/auth.rs` | T-11 |
+| Hashing de contraseñas | Hecho | `hashear_password`/`password_correcta` con argon2id (PHC); seed con hash precomputado de `demo1234`; tests en `backend/src/auth.rs` | T-11 |
 | Login con cuenta propia (JWT real) | Hecho | `POST /api/login` verifica el hash argon2id y emite JWT HS256 (claims `sub=correo`, `nombre`, exp 24h); el extractor `EmpresaSession` protege 8 rutas (401 con token ausente/inválido/expirado); CORS restringido a orígenes locales | T-10, T-13, ola 1 |
 | Aislamiento multi-tenant | Hecho (tenant = correo de la empresa, sale del JWT) | `planes_pago` y `dashboard_stats` guardan `empresa = <correo del token>`; `GET /api/creditos` y `GET /api/dashboard` filtran por el token (la empresa ya no viaja en la URL); datos previos migrados con `backend/scripts/migrate_tenant.js` (idempotente) | Ola 1 |
 | Red de Alerta Temprana | Hecho | `POST /api/clientes/:curp/reportar` + campo `alerta` en `Cliente`; banner en panel de búsqueda (frontend) | T-08 (backend), T-09 (frontend) |
