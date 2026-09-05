@@ -6,7 +6,7 @@ Base URL: `http://127.0.0.1:3000`
 
 Formato de intercambio: `application/json`.
 
-Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`.
+Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `pagos`, `dashboard_stats`, `verificaciones`.
 
 ## Autenticación (JWT Bearer)
 
@@ -311,15 +311,82 @@ Autoriza un crédito ya evaluado: inserta el plan de pago y actualiza (upsert) l
 
 **Respuesta (éxito):**
 ```json
-{ "status": "success" }
+{ "status": "success", "plan_id": "66c9f2e4a1b2c3d4e5f60718" }
 ```
+
+`plan_id` es el hex del ObjectId insertado en `planes_pago`; el frontend lo usa
+para registrar pagos (también se expone como `_id` en `GET /api/creditos`).
 
 **Respuesta (error al guardar el plan de pago):**
 ```json
 { "status": "error", "message": "Error al guardar el plan de pago" }
 ```
 
-**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa` con `$inc` en `creditos_activos`, `capital_prestado`, `proximos_cobros`).
+**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa`, recalculado desde la cartera real: `creditos_activos` = planes Activo o Moroso, `capital_prestado` = suma de `monto_total` de todos los planes, `proximos_cobros` = cuotas que vencen en ≤30 días de planes no liquidados).
+
+---
+
+## POST `/api/creditos/pagos` — protegida
+
+Registra el pago de una cuota de un plan (ola 4). Inserta en `pagos`,
+recalcula el estado del plan (`Activo` → `Moroso` si hay cuota vencida sin
+pagar → `Liquidado` cuando se pagan todas las cuotas) y devuelve el plan
+actualizado con su avance.
+
+**Requiere:** `Authorization: Bearer <token>` — el plan se busca entre los de
+la empresa del token; el tenant sale del token, nunca del body.
+
+**Payload:**
+```json
+{
+  "plan_id": "66c9f2e4a1b2c3d4e5f60718",
+  "cuota": 1,
+  "monto": 1766.67
+}
+```
+
+`plan_id` = hex del ObjectId del plan (lo expone `GET /api/creditos`).
+
+**Validaciones (en orden):**
+1. El plan existe y pertenece a la empresa del token → si no, `404`
+   ```json
+   { "status": "error", "message": "Plan no encontrado" }
+   ```
+2. `cuota` en `1..=plazo_meses` → si no, `400`
+   ```json
+   { "status": "error", "message": "Cuota fuera de rango: debe estar entre 1 y 6" }
+   ```
+3. La cuota no está pagada ya → si lo está, `400`
+   ```json
+   { "status": "error", "message": "Cuota ya registrada" }
+   ```
+4. `monto` igual al `pago_mensual` del plan (tolerancia 1 centavo) → si no, `400`
+   ```json
+   { "status": "error", "message": "El monto debe ser igual al pago mensual del plan ($1766.67)" }
+   ```
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "plan": {
+    "_id": "66c9f2e4a1b2c3d4e5f60718",
+    "empresa": "demo@pymza.mx",
+    "cliente_curp": "GARM980412HDFNRL08",
+    "producto": "Crédito comercial",
+    "monto_total": 10600.0,
+    "plazo_meses": 6,
+    "pago_mensual": 1766.67,
+    "tasa_interes": 0.06,
+    "estado": "Activo",
+    "fecha": "2026-07-22",
+    "cuotas_pagadas": 1,
+    "cuotas_vencidas": 0
+  }
+}
+```
+
+**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió) y `dashboard_stats` (upsert recalculado).
 
 ---
 
@@ -335,6 +402,7 @@ Lista los créditos (planes de pago) activos de la empresa autenticada.
   "status": "success",
   "creditos": [
     {
+      "_id": "66c9f2e4a1b2c3d4e5f60718",
       "empresa": "demo@pymza.mx",
       "cliente_curp": "GARM980412HDFNRL08",
       "producto": "Crédito comercial",
@@ -343,13 +411,82 @@ Lista los créditos (planes de pago) activos de la empresa autenticada.
       "pago_mensual": 1766.67,
       "tasa_interes": 0.06,
       "estado": "Activo",
-      "fecha": "2026-07-22"
+      "fecha": "2026-07-22",
+      "cuotas_pagadas": 2,
+      "cuotas_vencidas": 0
     }
   ]
 }
 ```
 
-**Colección Mongo:** `planes_pago` (busca por `empresa`).
+Ola 4: cada crédito expone `_id` (hex, para registrar pagos) y el avance
+calculado en servidor — `cuotas_pagadas` (pagos registrados del plan) y
+`cuotas_vencidas` (cuotas con vencimiento anterior a hoy sin pago). Estos dos
+campos se calculan, no se persisten.
+
+**Colección Mongo:** `planes_pago` y `pagos` (leídos por `empresa` para calcular el avance).
+
+---
+
+## GET `/api/creditos/resumen` — protegida
+
+Resumen de cartera del tenant para las gráficas del dashboard (ola 4). Se
+calcula en memoria sobre los planes y pagos de la empresa del token.
+
+**Requiere:** `Authorization: Bearer <token>` — el resumen sale del tenant
+del token; los datos nunca cruzan entre empresas.
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "resumen": {
+    "cobrado_vs_por_cobrar": [
+      { "mes": "2026-04", "cobrado": 0.0, "por_cobrar": 0.0 },
+      { "mes": "2026-09", "cobrado": 1766.67, "por_cobrar": 3533.34 }
+    ],
+    "tasa_morosidad": 0.25,
+    "flujo_proyectado": [
+      { "horizonte": 30, "monto": 1766.67 },
+      { "horizonte": 60, "monto": 3533.34 },
+      { "horizonte": 90, "monto": 5300.01 }
+    ],
+    "aging": [
+      { "bucket": "0-30", "monto": 1766.67 },
+      { "bucket": "31-60", "monto": 0.0 },
+      { "bucket": "61-90", "monto": 0.0 },
+      { "bucket": "90+", "monto": 0.0 }
+    ],
+    "top_deudores": [
+      { "cliente_curp": "GARM980412HDFNRL08", "nombre": "María García", "saldo": 8833.35 }
+    ],
+    "distribucion_montos": [
+      { "bucket": "0-1k", "n": 0 },
+      { "bucket": "1k-5k", "n": 0 },
+      { "bucket": "5k+", "n": 1 }
+    ]
+  }
+}
+```
+
+Definiciones exactas:
+- `cobrado_vs_por_cobrar` — 6 meses: el actual + 5 previos, ascendente
+  (`mes` = "YYYY-MM"). `cobrado` = pagos registrados del mes; `por_cobrar` =
+  cuotas esperadas de ese mes (vencimiento en el mes, sin pago) en planes no
+  liquidados.
+- `tasa_morosidad` — f64 0..1 = planes Moroso / planes no liquidados (0 si no
+  hay planes no liquidados).
+- `flujo_proyectado` — monto de las cuotas que vencen en ≤30 / ≤60 / ≤90 días
+  (ventanas acumulativas, hoy incluido) de planes Activo o Moroso.
+- `aging` — saldo vencido por antigüedad de la cuota impaga (días desde su
+  vencimiento): 1–30 → "0-30", 31–60, 61–90, >90 → "90+".
+- `top_deudores` — máx 10, saldo = pago_mensual × plazo − pagos registrados,
+  descendente; `nombre` viene de `clientes` por `curp` (si el cliente ya no
+  existe, el curp hace de nombre).
+- `distribucion_montos` — nº de planes por `monto_total`: <1000 → "0-1k",
+  <5000 → "1k-5k", ≥5000 → "5k+".
+
+**Colecciones Mongo:** `planes_pago`, `pagos` y `clientes` (solo lectura).
 
 ---
 
@@ -399,8 +536,18 @@ y lo envía por el `OtpSender` activo:
 
 - **Mock (default en dev):** el código queda impreso en el log del backend
   (`OTP MOCK para <telefono>: <codigo>`).
-- **WhatsApp Cloud API:** activa si `WHATSAPP_TOKEN` y
+- **WhatsApp Cloud API (ola 4):** activa si `WHATSAPP_TOKEN` y
   `WHATSAPP_PHONE_NUMBER_ID` existen y no están vacías (ver `.env.example`).
+  El envío va por **plantilla de autenticación** (fuera de la ventana de 24 h
+  Meta solo permite plantillas): `template.name` = `WHATSAPP_TEMPLATE`
+  (default `pymza_otp_verification`), `language.code` =
+  `WHATSAPP_TEMPLATE_LANG` (default `es`) y el código como parámetro `text`
+  del body. Si el envío falla, el backend solo lo registra en el log y el
+  flujo continúa (se puede pedir otro código).
+
+La colección `verificaciones` tiene un **índice TTL** sobre `expira_en`
+(BSON date, `expireAfterSeconds: 0`, creado idempotentemente al arrancar el
+backend): Mongo borra los desafíos vencidos automáticamente.
 
 **Requiere:** `Authorization: Bearer <token>`
 
@@ -419,7 +566,7 @@ y lo envía por el `OtpSender` activo:
 
 **Respuesta (error de DB):** `500` con `{ "status": "error", "message": "Error interno" }`.
 
-**Colección Mongo:** `verificaciones` (documentos `{ curp, telefono, codigo_hash, expira_en }`).
+**Colección Mongo:** `verificaciones` (documentos `{ curp, telefono, codigo_hash, expira_en }`; `expira_en` es BSON date desde la ola 4, con índice TTL).
 
 ---
 

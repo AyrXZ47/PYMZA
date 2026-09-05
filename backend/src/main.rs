@@ -10,7 +10,10 @@ use axum::{extract::State, routing::{get, post}, Json, Router};
 
 use auth::{cors_layer, jwt_secret, login_empresa, EmpresaSession};
 use routes::cliente::{buscar_cliente, crear_cliente, reportar_cliente};
-use routes::credito::{autorizar_credito, evaluar_credito, obtener_creditos, obtener_dashboard};
+use routes::credito::{
+    autorizar_credito, evaluar_credito, obtener_creditos, obtener_dashboard, obtener_resumen,
+    registrar_pago,
+};
 use routes::empresa::alta_empresa;
 use routes::verificacion::{confirmar_verificacion, solicitar_verificacion};
 
@@ -33,7 +36,9 @@ async fn main() {
         .route("/api/clientes/:curp/reportar", post(reportar_cliente))
         .route("/api/creditos/evaluar", post(evaluar_credito))
         .route("/api/creditos/autorizar", post(autorizar_credito))
+        .route("/api/creditos/pagos", post(registrar_pago))
         .route("/api/creditos", get(obtener_creditos))
+        .route("/api/creditos/resumen", get(obtener_resumen))
         .route("/api/dashboard", get(obtener_dashboard))
         .route("/api/verificaciones/solicitar", post(solicitar_verificacion))
         .route("/api/verificaciones/confirmar", post(confirmar_verificacion))
