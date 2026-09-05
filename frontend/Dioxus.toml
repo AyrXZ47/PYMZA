@@ -3,7 +3,7 @@
 [web.app]
 
 # HTML title tag content
-title = "frontend"
+title = "PYMZA — Crédito con cobranza respaldada"
 
 # include `assets` in web platform
 [web.resource]

@@ -18,6 +18,7 @@ use crate::components::registro::Registro;
 use crate::components::sidebar::Sidebar;
 
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
+const FAVICON: Asset = asset!("/assets/favicon.svg");
 
 /// Pantallas del portal público (sin auth; render condicional).
 #[derive(Clone, Copy, PartialEq)]
@@ -94,6 +95,7 @@ fn App() -> Element {
 
     rsx! {
         document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+        document::Link { rel: "icon", href: FAVICON }
         if is_authenticated() {
             div {
                 class: "flex h-screen bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white",
