@@ -428,6 +428,68 @@ campos se calculan, no se persisten.
 
 ---
 
+## GET `/api/creditos/resumen` — protegida
+
+Resumen de cartera del tenant para las gráficas del dashboard (ola 4). Se
+calcula en memoria sobre los planes y pagos de la empresa del token.
+
+**Requiere:** `Authorization: Bearer <token>` — el resumen sale del tenant
+del token; los datos nunca cruzan entre empresas.
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "resumen": {
+    "cobrado_vs_por_cobrar": [
+      { "mes": "2026-04", "cobrado": 0.0, "por_cobrar": 0.0 },
+      { "mes": "2026-09", "cobrado": 1766.67, "por_cobrar": 3533.34 }
+    ],
+    "tasa_morosidad": 0.25,
+    "flujo_proyectado": [
+      { "horizonte": 30, "monto": 1766.67 },
+      { "horizonte": 60, "monto": 3533.34 },
+      { "horizonte": 90, "monto": 5300.01 }
+    ],
+    "aging": [
+      { "bucket": "0-30", "monto": 1766.67 },
+      { "bucket": "31-60", "monto": 0.0 },
+      { "bucket": "61-90", "monto": 0.0 },
+      { "bucket": "90+", "monto": 0.0 }
+    ],
+    "top_deudores": [
+      { "cliente_curp": "GARM980412HDFNRL08", "nombre": "María García", "saldo": 8833.35 }
+    ],
+    "distribucion_montos": [
+      { "bucket": "0-1k", "n": 0 },
+      { "bucket": "1k-5k", "n": 0 },
+      { "bucket": "5k+", "n": 1 }
+    ]
+  }
+}
+```
+
+Definiciones exactas:
+- `cobrado_vs_por_cobrar` — 6 meses: el actual + 5 previos, ascendente
+  (`mes` = "YYYY-MM"). `cobrado` = pagos registrados del mes; `por_cobrar` =
+  cuotas esperadas de ese mes (vencimiento en el mes, sin pago) en planes no
+  liquidados.
+- `tasa_morosidad` — f64 0..1 = planes Moroso / planes no liquidados (0 si no
+  hay planes no liquidados).
+- `flujo_proyectado` — monto de las cuotas que vencen en ≤30 / ≤60 / ≤90 días
+  (ventanas acumulativas, hoy incluido) de planes Activo o Moroso.
+- `aging` — saldo vencido por antigüedad de la cuota impaga (días desde su
+  vencimiento): 1–30 → "0-30", 31–60, 61–90, >90 → "90+".
+- `top_deudores` — máx 10, saldo = pago_mensual × plazo − pagos registrados,
+  descendente; `nombre` viene de `clientes` por `curp` (si el cliente ya no
+  existe, el curp hace de nombre).
+- `distribucion_montos` — nº de planes por `monto_total`: <1000 → "0-1k",
+  <5000 → "1k-5k", ≥5000 → "5k+".
+
+**Colecciones Mongo:** `planes_pago`, `pagos` y `clientes` (solo lectura).
+
+---
+
 ## GET `/api/dashboard` — protegida
 
 Estadísticas del dashboard de la empresa autenticada.
