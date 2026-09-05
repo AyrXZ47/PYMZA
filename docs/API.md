@@ -536,8 +536,18 @@ y lo envía por el `OtpSender` activo:
 
 - **Mock (default en dev):** el código queda impreso en el log del backend
   (`OTP MOCK para <telefono>: <codigo>`).
-- **WhatsApp Cloud API:** activa si `WHATSAPP_TOKEN` y
+- **WhatsApp Cloud API (ola 4):** activa si `WHATSAPP_TOKEN` y
   `WHATSAPP_PHONE_NUMBER_ID` existen y no están vacías (ver `.env.example`).
+  El envío va por **plantilla de autenticación** (fuera de la ventana de 24 h
+  Meta solo permite plantillas): `template.name` = `WHATSAPP_TEMPLATE`
+  (default `pymza_otp_verification`), `language.code` =
+  `WHATSAPP_TEMPLATE_LANG` (default `es`) y el código como parámetro `text`
+  del body. Si el envío falla, el backend solo lo registra en el log y el
+  flujo continúa (se puede pedir otro código).
+
+La colección `verificaciones` tiene un **índice TTL** sobre `expira_en`
+(BSON date, `expireAfterSeconds: 0`, creado idempotentemente al arrancar el
+backend): Mongo borra los desafíos vencidos automáticamente.
 
 **Requiere:** `Authorization: Bearer <token>`
 
@@ -556,7 +566,7 @@ y lo envía por el `OtpSender` activo:
 
 **Respuesta (error de DB):** `500` con `{ "status": "error", "message": "Error interno" }`.
 
-**Colección Mongo:** `verificaciones` (documentos `{ curp, telefono, codigo_hash, expira_en }`).
+**Colección Mongo:** `verificaciones` (documentos `{ curp, telefono, codigo_hash, expira_en }`; `expira_en` es BSON date desde la ola 4, con índice TTL).
 
 ---
 

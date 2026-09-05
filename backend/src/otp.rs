@@ -53,6 +53,45 @@ impl WhatsAppOtpSender {
     }
 }
 
+/// Nombre de la plantilla de autenticación (env `WHATSAPP_TEMPLATE`,
+/// default `pymza_otp_verification`). V la aprueba en el portal de Meta.
+fn plantilla_nombre() -> String {
+    env_no_vacia("WHATSAPP_TEMPLATE").unwrap_or_else(|| "pymza_otp_verification".to_string())
+}
+
+/// Idioma de la plantilla (env `WHATSAPP_TEMPLATE_LANG`, default `es`).
+fn plantilla_idioma() -> String {
+    env_no_vacia("WHATSAPP_TEMPLATE_LANG").unwrap_or_else(|| "es".to_string())
+}
+
+/// Payload de envío por PLANTILLA de autenticación: fuera de la ventana de
+/// 24 h Meta solo permite plantillas, no mensajes libres. Función PURA
+/// (testeable); el código llega como parámetro `text` del body.
+/// `WHATSAPP_WABA_ID` NO se usa para enviar (solo gestión de la WABA en el
+/// portal de Meta) — no se agrega al código sin motivo.
+fn payload_plantilla(
+    telefono: &str,
+    codigo: &str,
+    nombre_plantilla: &str,
+    idioma: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "messaging_product": "whatsapp",
+        "to": telefono,
+        "type": "template",
+        "template": {
+            "name": nombre_plantilla,
+            "language": { "code": idioma },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [ { "type": "text", "text": codigo } ]
+                }
+            ]
+        }
+    })
+}
+
 fn env_no_vacia(key: &str) -> Option<String> {
     // Un placeholder vacío (p. ej. copiado de .env.example) no activa WhatsApp.
     std::env::var(key).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
@@ -69,12 +108,7 @@ impl OtpSender for WhatsAppOtpSender {
                 self.phone_number_id
             ))
             .bearer_auth(&self.token)
-            .json(&serde_json::json!({
-                "messaging_product": "whatsapp",
-                "to": telefono,
-                "type": "text",
-                "text": { "body": format!("Tu código de verificación PYMZA es: {codigo}") }
-            }))
+            .json(&payload_plantilla(telefono, codigo, &plantilla_nombre(), &plantilla_idioma()))
             .send()
             .await;
         // Nunca panickea: si WhatsApp falla, el backend sigue y el usuario
@@ -133,5 +167,19 @@ mod tests {
         );
         assert_eq!(hash_codigo("123456"), h, "determinista");
         assert_ne!(hash_codigo("654321"), h);
+    }
+
+    #[test]
+    fn payload_plantilla_lleva_el_codigo_como_parametro_del_body() {
+        let p = payload_plantilla("5215512345678", "012345", "pymza_otp_verification", "es");
+        assert_eq!(p["messaging_product"], "whatsapp");
+        assert_eq!(p["to"], "5215512345678");
+        assert_eq!(p["type"], "template");
+        assert_eq!(p["template"]["name"], "pymza_otp_verification");
+        assert_eq!(p["template"]["language"]["code"], "es");
+        let componente = &p["template"]["components"][0];
+        assert_eq!(componente["type"], "body");
+        assert_eq!(componente["parameters"][0]["type"], "text");
+        assert_eq!(componente["parameters"][0]["text"], "012345");
     }
 }

@@ -52,7 +52,8 @@ pub async fn solicitar_verificacion(
             "curp": &payload.curp,
             "telefono": &payload.telefono,
             "codigo_hash": codigo_hash, // NUNCA el código en claro
-            "expira_en": expira_en,     // unix millis
+            // BSON date (no i64): el índice TTL de db.rs solo expira campos date.
+            "expira_en": mongodb::bson::DateTime::from_millis(expira_en),
         },
         None,
     )
@@ -89,7 +90,14 @@ pub async fn confirmar_verificacion(
         return Err(no_encontrado("No hay un código de verificación solicitado"));
     };
 
-    if desafio.get_i64("expira_en").unwrap_or(0) < Utc::now().timestamp_millis() {
+    // BSON date; docs legados con i64 → None → tratados como expirados y se
+    // pide un código nuevo (ventana de solo 10 min, no rompe nada).
+    let expira = desafio
+        .get("expira_en")
+        .and_then(|b| b.as_datetime())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0);
+    if expira < Utc::now().timestamp_millis() {
         // Desafío expirado: se limpia para que el cliente solicite otro.
         let _ = verif.delete_one(filtro, None).await;
         return Err(codigo_invalido());
