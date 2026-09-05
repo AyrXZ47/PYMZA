@@ -41,7 +41,7 @@ Constraints:
 | 1 | Cimientos: JWT real + aislamiento multi-tenant + frontend partido en módulos | [x] auditada 2026-08-17 |
 | 2 | Portal público: landing que venda, registro/login separados, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
 | 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED; D1/D2 aprobadas; O1-O3 observaciones con owner) |
-| 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] planificada (EN CURSO) |
+| 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] integrada 2026-09-04 (build+tests verdes; auditoría pendiente) |
 | 5 | KYC/OCR real (subida de archivos) + score alternativo por recibos de servicios | [ ] |
 | 6 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
@@ -137,8 +137,8 @@ Fuera de ambos (nadie toca): `frontend/tailwind.sh`, `frontend/AGENTS.md`,
 
 ### Tareas
 
-- [ ] T1 (executor-1): pagos + estados de plan + resumen para gráficas + plantilla WhatsApp + TTL → brief: `.workflow/briefs/wave4-executor-1.md`
-- [ ] T2 (executor-2): primitivas SVG + 6 gráficas en dashboard + registrar pago en cartera + favicon/título → brief: `.workflow/briefs/wave4-executor-2.md`
+- [x] T1 (executor-1): pagos + estados de plan + resumen para gráficas + plantilla WhatsApp + TTL → brief: `.workflow/briefs/wave4-executor-1.md`
+- [x] T2 (executor-2): primitivas SVG + 6 gráficas en dashboard + registrar pago en cartera + favicon/título → brief: `.workflow/briefs/wave4-executor-2.md`
 
 ### Plan de integración
 
