@@ -13,15 +13,15 @@ const EMPRESA = 'Ferretería El Tornillo';
 // guardan `empresa: <correo>`, no el nombre comercial.
 const CORREO_DEMO = 'demo@pymza.mx';
 
-// Hash precomputado de 'demo123' (argon2id, params por defecto: m=19456, t=2, p=1).
+// Hash precomputado de 'demo1234' (argon2id, params por defecto: m=19456, t=2, p=1).
 // mongosh no puede hashear: se genera offline y se documenta aquí.
 // Regenerar solo si cambia la contraseña demo (p. ej. con el backend: Argon2::default().hash_password).
-const HASH_DEMO123 = '$argon2id$v=19$m=19456,t=2,p=1$S5gl3Bbi6xPFEATdpoI9yA$agd71TtOEoh0wIkeeAsnmfFJEVQs7UZHTcfx9aGpkZk';
+const HASH_DEMO1234 = '$argon2id$v=19$m=19456,t=2,p=1$7iqCVBbh+svq4aahp3Rskg$yuh8CSbSuKsydcg7rGznywDiepmhFtKy/Ee8kkH9RbY';
 
 db.dropDatabase();
 
 db.empresas.insertMany([
-  { correo: CORREO_DEMO, password: HASH_DEMO123, nombre_empresa: EMPRESA },
+  { correo: CORREO_DEMO, password: HASH_DEMO1234, nombre_empresa: EMPRESA },
 ]);
 
 // CURPs con dígito verificador oficial (Instructivo RENAPO, DOF 18-10-2021).
@@ -78,4 +78,4 @@ db.dashboard_stats.insertOne({
   proximos_cobros: 6,
 });
 
-print(`Seed OK — empresa demo: ${EMPRESA} (demo@pymza.mx / demo123)`);
+print(`Seed OK — empresa demo: ${EMPRESA} (demo@pymza.mx / demo1234)`);
