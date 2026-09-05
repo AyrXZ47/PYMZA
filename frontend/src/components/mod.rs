@@ -1,5 +1,6 @@
 pub mod alta_cliente;
 pub mod cartera;
+pub mod charts;
 pub mod dashboard;
 pub mod landing;
 pub mod login;
