@@ -44,7 +44,7 @@ Constraints:
 | 2 | Portal público: landing que venda, registro/login separados, tema claro/oscuro, `API_BASE` configurable | [x] auditada 2026-08-28 |
 | 3 | Identidad verificable: CURP con dígito verificador, correo del cliente, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 (APPROVED) |
 | 4 | Cartera viva: registro de pagos + estados de plan + gráficas de impacto (SVG) + favicon | [x] auditada 2026-09-04 (APPROVED; N1-N3 informativas) |
-| 5 | KYC/OCR real (subida de archivos, tesseract) + score alternativo por recibos de servicios | [x] planificada (EN CURSO) |
+| 5 | KYC/OCR real (subida de archivos, tesseract) + score alternativo por recibos de servicios | [x] integrada 2026-09-04 (build+tests OK; humo: kyc OK, mime/b64 400 OK; pendiente auditor: fixture produce <50 chars OCR → recibos sin bonus/tope, y >2MB da 413 por body-limit de Axum) |
 | 6 | Contrato PDF + Producción: Railway, CORS productivo, rate limiting, backups, security audit (release gate) | [ ] |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
