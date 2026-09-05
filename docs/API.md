@@ -6,7 +6,7 @@ Base URL: `http://127.0.0.1:3000`
 
 Formato de intercambio: `application/json`.
 
-Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`.
+Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago`, `pagos`, `dashboard_stats`, `verificaciones`.
 
 ## Autenticación (JWT Bearer)
 
@@ -311,15 +311,82 @@ Autoriza un crédito ya evaluado: inserta el plan de pago y actualiza (upsert) l
 
 **Respuesta (éxito):**
 ```json
-{ "status": "success" }
+{ "status": "success", "plan_id": "66c9f2e4a1b2c3d4e5f60718" }
 ```
+
+`plan_id` es el hex del ObjectId insertado en `planes_pago`; el frontend lo usa
+para registrar pagos (también se expone como `_id` en `GET /api/creditos`).
 
 **Respuesta (error al guardar el plan de pago):**
 ```json
 { "status": "error", "message": "Error al guardar el plan de pago" }
 ```
 
-**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa` con `$inc` en `creditos_activos`, `capital_prestado`, `proximos_cobros`).
+**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa`, recalculado desde la cartera real: `creditos_activos` = planes Activo o Moroso, `capital_prestado` = suma de `monto_total` de todos los planes, `proximos_cobros` = cuotas que vencen en ≤30 días de planes no liquidados).
+
+---
+
+## POST `/api/creditos/pagos` — protegida
+
+Registra el pago de una cuota de un plan (ola 4). Inserta en `pagos`,
+recalcula el estado del plan (`Activo` → `Moroso` si hay cuota vencida sin
+pagar → `Liquidado` cuando se pagan todas las cuotas) y devuelve el plan
+actualizado con su avance.
+
+**Requiere:** `Authorization: Bearer <token>` — el plan se busca entre los de
+la empresa del token; el tenant sale del token, nunca del body.
+
+**Payload:**
+```json
+{
+  "plan_id": "66c9f2e4a1b2c3d4e5f60718",
+  "cuota": 1,
+  "monto": 1766.67
+}
+```
+
+`plan_id` = hex del ObjectId del plan (lo expone `GET /api/creditos`).
+
+**Validaciones (en orden):**
+1. El plan existe y pertenece a la empresa del token → si no, `404`
+   ```json
+   { "status": "error", "message": "Plan no encontrado" }
+   ```
+2. `cuota` en `1..=plazo_meses` → si no, `400`
+   ```json
+   { "status": "error", "message": "Cuota fuera de rango: debe estar entre 1 y 6" }
+   ```
+3. La cuota no está pagada ya → si lo está, `400`
+   ```json
+   { "status": "error", "message": "Cuota ya registrada" }
+   ```
+4. `monto` igual al `pago_mensual` del plan (tolerancia 1 centavo) → si no, `400`
+   ```json
+   { "status": "error", "message": "El monto debe ser igual al pago mensual del plan ($1766.67)" }
+   ```
+
+**Respuesta (éxito):**
+```json
+{
+  "status": "success",
+  "plan": {
+    "_id": "66c9f2e4a1b2c3d4e5f60718",
+    "empresa": "demo@pymza.mx",
+    "cliente_curp": "GARM980412HDFNRL08",
+    "producto": "Crédito comercial",
+    "monto_total": 10600.0,
+    "plazo_meses": 6,
+    "pago_mensual": 1766.67,
+    "tasa_interes": 0.06,
+    "estado": "Activo",
+    "fecha": "2026-07-22",
+    "cuotas_pagadas": 1,
+    "cuotas_vencidas": 0
+  }
+}
+```
+
+**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió) y `dashboard_stats` (upsert recalculado).
 
 ---
 
@@ -335,6 +402,7 @@ Lista los créditos (planes de pago) activos de la empresa autenticada.
   "status": "success",
   "creditos": [
     {
+      "_id": "66c9f2e4a1b2c3d4e5f60718",
       "empresa": "demo@pymza.mx",
       "cliente_curp": "GARM980412HDFNRL08",
       "producto": "Crédito comercial",
@@ -343,13 +411,20 @@ Lista los créditos (planes de pago) activos de la empresa autenticada.
       "pago_mensual": 1766.67,
       "tasa_interes": 0.06,
       "estado": "Activo",
-      "fecha": "2026-07-22"
+      "fecha": "2026-07-22",
+      "cuotas_pagadas": 2,
+      "cuotas_vencidas": 0
     }
   ]
 }
 ```
 
-**Colección Mongo:** `planes_pago` (busca por `empresa`).
+Ola 4: cada crédito expone `_id` (hex, para registrar pagos) y el avance
+calculado en servidor — `cuotas_pagadas` (pagos registrados del plan) y
+`cuotas_vencidas` (cuotas con vencimiento anterior a hoy sin pago). Estos dos
+campos se calculan, no se persisten.
+
+**Colección Mongo:** `planes_pago` y `pagos` (leídos por `empresa` para calcular el avance).
 
 ---
 
