@@ -367,6 +367,162 @@ pub fn alerta_info(cliente: &serde_json::Value) -> Option<(String, String)> {
     Some((motivo.to_string(), empresa.to_string()))
 }
 
+// --- Verificación de INE (KYC) y score por recibos (contrato API ola 5). ---
+// Subida = base64 en JSON (no multipart); el mismo mímee/tamaño que valida el
+// backend se valida client-side para no mandar algo que ya sabemos que falla.
+
+/// Límite de tamaño del contrato ola 5 (2 MB).
+pub const TAM_MAX_ARCHIVO: u64 = 2 * 1024 * 1024;
+
+/// Mimes de imagen que aceptan kyc y recibos (igual que el backend).
+pub const MIMES_IMAGEN: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// Codifica bytes en base64 estándar (alfabeto con relleno, como `base64 -w0`).
+pub fn archivo_a_b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Lee los bytes de un archivo seleccionado (en wasm: FileReader async de
+/// dioxus-web) y los codifica base64. Los errores de lectura regresan como
+/// texto listo para la UI.
+pub async fn archivo_a_b64_de(file: &dioxus_elements::FileData) -> Result<String, String> {
+    let bytes = file
+        .read_bytes()
+        .await
+        .map_err(|_| "No se pudo leer el archivo".to_string())?;
+    Ok(archivo_a_b64(&bytes))
+}
+
+/// Validación client-side de un archivo antes de enviarlo: `Some(motivo)` si
+/// hay que rechazarlo, `None` si pasa (mismo orden de reglas que el backend:
+/// mime primero, tamaño después).
+pub fn validar_archivo(tamano: u64, mime: Option<&str>) -> Option<String> {
+    match mime {
+        Some(m) if MIMES_IMAGEN.contains(&m) => {}
+        _ => return Some("Solo se aceptan imágenes PNG, JPEG o WebP".to_string()),
+    }
+    (tamano > TAM_MAX_ARCHIVO).then(|| "El archivo supera el límite de 2 MB".to_string())
+}
+
+/// ¿El cliente ya tiene la INE verificada? Clientes anteriores a la ola 5 no
+/// traen el campo → no verificada (mismo default que `telefono_verificado`).
+pub fn ine_verificada(cliente: &serde_json::Value) -> bool {
+    cliente
+        .get("ine_verificada")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Request a `POST /api/clientes/{curp}/kyc`: envía la INE en base64; el
+/// backend corre OCR y responde si la CURP del documento coincide.
+pub fn kyc_verificar(
+    curp: &str,
+    archivo_b64: &str,
+    mime: &str,
+    token: &str,
+) -> reqwest::RequestBuilder {
+    authed_request(
+        reqwest::Method::POST,
+        format!("/api/clientes/{curp}/kyc"),
+        token,
+    )
+    .json(&serde_json::json!({ "archivo_b64": archivo_b64, "mime": mime }))
+}
+
+/// Request a `POST /api/clientes/{curp}/recibos`: sube un recibo de servicios
+/// (`tipo`: "luz" | "agua" | "telefono") para el bonus de score (+25, máx 2).
+pub fn recibo_subir(
+    curp: &str,
+    archivo_b64: &str,
+    mime: &str,
+    tipo: &str,
+    token: &str,
+) -> reqwest::RequestBuilder {
+    authed_request(
+        reqwest::Method::POST,
+        format!("/api/clientes/{curp}/recibos"),
+        token,
+    )
+    .json(&serde_json::json!({
+        "archivo_b64": archivo_b64,
+        "mime": mime,
+        "tipo": tipo
+    }))
+}
+
+/// Respuesta de `POST /api/clientes/:curp/kyc` (contrato ola 5).
+/// `#[serde(default)]` tolera respuestas parciales del backend.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct KycResultado {
+    pub curp_ine: Option<String>,
+    pub nombre_ine: Option<String>,
+    pub coincide: bool,
+    pub ine_verificada: bool,
+}
+
+/// Respuesta de `POST /api/clientes/:curp/recibos` (contrato ola 5).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ReciboResultado {
+    pub monto_leido: Option<f64>,
+    pub score: i64,
+    pub nivel_riesgo: String,
+    pub recibos_contados: i64,
+}
+
+/// Parseo puro del body de kyc (testeable en host): solo `status: "success"`.
+pub fn parsear_kyc(data: &serde_json::Value) -> Option<KycResultado> {
+    if data["status"] == "success" {
+        serde_json::from_value(data.clone()).ok()
+    } else {
+        None
+    }
+}
+
+/// Parseo puro del body de recibos (testeable en host).
+pub fn parsear_recibo(data: &serde_json::Value) -> Option<ReciboResultado> {
+    if data["status"] == "success" {
+        serde_json::from_value(data.clone()).ok()
+    } else {
+        None
+    }
+}
+
+/// Semáforo del panel KYC (función pura, testeable): color ("green"/"amber",
+/// como `semaforo_morosidad`) + mensaje según el resultado del backend y la
+/// CURP capturada.
+pub fn mensaje_kyc(res: &KycResultado, curp_capturada: &str) -> (&'static str, String) {
+    if res.coincide {
+        let leida = res.curp_ine.as_deref().unwrap_or(curp_capturada);
+        ("green", format!("✓ INE verificada — CURP leída: {leida}"))
+    } else if let Some(curp_ine) = res.curp_ine.as_deref() {
+        (
+            "amber",
+            format!("La CURP de la INE ({curp_ine}) no coincide con la capturada ({curp_capturada})"),
+        )
+    } else {
+        (
+            "amber",
+            "No se pudo leer la CURP del documento, prueba otra foto".to_string(),
+        )
+    }
+}
+
+/// Mensaje de resultado de un recibo subido: score nuevo, nivel de riesgo y
+/// conteo; con nota del monto leído cuando el OCR lo encontró.
+pub fn mensaje_recibo(res: &ReciboResultado) -> String {
+    let base = format!(
+        "Score: {} · Riesgo: {} · Recibos {}/2",
+        res.score, res.nivel_riesgo, res.recibos_contados
+    );
+    match res.monto_leido {
+        Some(monto) => format!("{base} · monto leído: {monto}"),
+        None => base,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,5 +747,227 @@ mod tests {
         assert_eq!(siguiente_cuota_impaga(12, 15), None, "datos raros");
         assert_eq!(siguiente_cuota_impaga(0, 0), None);
         assert_eq!(siguiente_cuota_impaga(12, -3), Some(1), "pagadas negativas no rompen");
+    }
+
+    // --- Contrato API ola 5: KYC (INE) y score por recibos. ---
+
+    #[test]
+    fn archivo_a_b64_sigue_el_estandar_rfc4648() {
+        assert_eq!(archivo_a_b64(b""), "");
+        assert_eq!(archivo_a_b64(b"f"), "Zg==");
+        assert_eq!(archivo_a_b64(b"fo"), "Zm8=");
+        assert_eq!(archivo_a_b64(b"foo"), "Zm9v");
+        assert_eq!(archivo_a_b64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn archivo_a_b64_codifica_binario_que_no_es_utf8() {
+        assert_eq!(archivo_a_b64(&[0xff]), "/w==");
+        assert_eq!(archivo_a_b64(&[0x00, 0xff, 0x10]), "AP8Q");
+    }
+
+    #[test]
+    fn validar_archivo_acepta_imagenes_dentro_del_limite() {
+        assert_eq!(validar_archivo(0, Some("image/png")), None);
+        assert_eq!(validar_archivo(100, Some("image/jpeg")), None);
+        assert_eq!(validar_archivo(100, Some("image/webp")), None);
+        assert_eq!(
+            validar_archivo(TAM_MAX_ARCHIVO, Some("image/png")),
+            None,
+            "2 MB exactos pasan (el contrato dice ≤ 2 MB)"
+        );
+    }
+
+    #[test]
+    fn validar_archivo_rechaza_mime_y_tamano_fuera_de_contrato() {
+        assert_eq!(
+            validar_archivo(0, None).as_deref(),
+            Some("Solo se aceptan imágenes PNG, JPEG o WebP")
+        );
+        assert_eq!(
+            validar_archivo(0, Some("application/pdf")).as_deref(),
+            Some("Solo se aceptan imágenes PNG, JPEG o WebP")
+        );
+        assert_eq!(
+            validar_archivo(TAM_MAX_ARCHIVO + 1, Some("image/png")).as_deref(),
+            Some("El archivo supera el límite de 2 MB")
+        );
+    }
+
+    #[test]
+    fn ine_verificada_true_solo_con_el_campo_en_true() {
+        assert!(ine_verificada(&serde_json::json!({ "ine_verificada": true })));
+        assert!(!ine_verificada(&serde_json::json!({ "ine_verificada": false })));
+        // cliente de antes de la ola 5: sin el campo → no verificada
+        assert!(!ine_verificada(&serde_json::json!({ "curp": "GACM940101HDFRRR07" })));
+    }
+
+    #[test]
+    fn kyc_verificar_construye_post_con_archivo_y_mime() {
+        let request = kyc_verificar("GACM940101HDFRRR07", "QUJD", "image/png", "tok")
+            .build()
+            .unwrap();
+        assert_eq!(*request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/api/clientes/GACM940101HDFRRR07/kyc");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "archivo_b64": "QUJD", "mime": "image/png" })
+        );
+    }
+
+    #[test]
+    fn recibo_subir_construye_post_con_tipo() {
+        let request = recibo_subir("GACM940101HDFRRR07", "QUJD", "image/jpeg", "luz", "tok")
+            .build()
+            .unwrap();
+        assert_eq!(*request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/api/clientes/GACM940101HDFRRR07/recibos");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["archivo_b64"], "QUJD");
+        assert_eq!(body["mime"], "image/jpeg");
+        assert_eq!(body["tipo"], "luz");
+    }
+
+    #[test]
+    fn parsear_kyc_con_shape_del_contrato() {
+        let data = serde_json::json!({
+            "status": "success",
+            "curp_ine": "GACM940101HDFRRR07",
+            "nombre_ine": "MARIA GUADALUPE ACOSTA CARDENAS",
+            "coincide": true,
+            "ine_verificada": true
+        });
+        let kyc = parsear_kyc(&data).expect("el shape del contrato debe parsear");
+        assert_eq!(kyc.curp_ine.as_deref(), Some("GACM940101HDFRRR07"));
+        assert_eq!(
+            kyc.nombre_ine.as_deref(),
+            Some("MARIA GUADALUPE ACOSTA CARDENAS")
+        );
+        assert!(kyc.coincide);
+        assert!(kyc.ine_verificada);
+    }
+
+    #[test]
+    fn parsear_kyc_curp_no_legible_es_success_con_none() {
+        let data = serde_json::json!({
+            "status": "success",
+            "curp_ine": null,
+            "nombre_ine": null,
+            "coincide": false,
+            "ine_verificada": false
+        });
+        let kyc = parsear_kyc(&data).expect("curp null es una respuesta válida");
+        assert_eq!(kyc.curp_ine, None);
+        assert!(!kyc.coincide);
+        assert!(!kyc.ine_verificada);
+    }
+
+    #[test]
+    fn parsear_kyc_status_error_es_none() {
+        assert_eq!(
+            parsear_kyc(&serde_json::json!({
+                "status": "error",
+                "message": "OCR no disponible en este servidor"
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn parsear_recibo_con_shape_del_contrato() {
+        let data = serde_json::json!({
+            "status": "success",
+            "monto_leido": 350.0,
+            "score": 600,
+            "nivel_riesgo": "Medio",
+            "recibos_contados": 1
+        });
+        let r = parsear_recibo(&data).expect("el shape del contrato debe parsear");
+        assert_eq!(r.monto_leido, Some(350.0));
+        assert_eq!(r.score, 600);
+        assert_eq!(r.nivel_riesgo, "Medio");
+        assert_eq!(r.recibos_contados, 1);
+    }
+
+    #[test]
+    fn parsear_recibo_monto_nulo_y_status_error() {
+        let ok = parsear_recibo(&serde_json::json!({
+            "status": "success",
+            "monto_leido": null,
+            "score": 550,
+            "nivel_riesgo": "Medio",
+            "recibos_contados": 2
+        }));
+        assert_eq!(ok.map(|r| r.monto_leido), Some(None), "recibo sin monto legible");
+        assert_eq!(
+            parsear_recibo(&serde_json::json!({
+                "status": "error",
+                "message": "Máximo 2 recibos por cliente"
+            })),
+            None
+        );
+    }
+
+    #[test]
+    fn mensaje_kyc_semaforo_de_tres_estados() {
+        let coincide = KycResultado {
+            curp_ine: Some("GACM940101HDFRRR07".into()),
+            nombre_ine: None,
+            coincide: true,
+            ine_verificada: true,
+        };
+        let (color, msg) = mensaje_kyc(&coincide, "GACM940101HDFRRR07");
+        assert_eq!(color, "green");
+        assert_eq!(msg, "✓ INE verificada — CURP leída: GACM940101HDFRRR07");
+
+        let distinta = KycResultado {
+            curp_ine: Some("AAAA000000XXXXXX00".into()),
+            nombre_ine: None,
+            coincide: false,
+            ine_verificada: false,
+        };
+        let (color, msg) = mensaje_kyc(&distinta, "GACM940101HDFRRR07");
+        assert_eq!(color, "amber");
+        assert_eq!(
+            msg,
+            "La CURP de la INE (AAAA000000XXXXXX00) no coincide con la capturada (GACM940101HDFRRR07)"
+        );
+
+        let ilegible = KycResultado {
+            curp_ine: None,
+            nombre_ine: None,
+            coincide: false,
+            ine_verificada: false,
+        };
+        let (color, msg) = mensaje_kyc(&ilegible, "GACM940101HDFRRR07");
+        assert_eq!(color, "amber");
+        assert_eq!(msg, "No se pudo leer la CURP del documento, prueba otra foto");
+    }
+
+    #[test]
+    fn mensaje_recibo_incluye_score_nivel_y_conteo() {
+        let completo = ReciboResultado {
+            monto_leido: Some(350.0),
+            score: 600,
+            nivel_riesgo: "Medio".into(),
+            recibos_contados: 1,
+        };
+        assert_eq!(
+            mensaje_recibo(&completo),
+            "Score: 600 · Riesgo: Medio · Recibos 1/2 · monto leído: 350"
+        );
+        let sin_monto = ReciboResultado {
+            monto_leido: None,
+            score: 575,
+            nivel_riesgo: "Medio".into(),
+            recibos_contados: 1,
+        };
+        assert_eq!(
+            mensaje_recibo(&sin_monto),
+            "Score: 575 · Riesgo: Medio · Recibos 1/2"
+        );
     }
 }

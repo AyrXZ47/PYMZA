@@ -4,10 +4,20 @@
 use dioxus::prelude::*;
 
 use crate::api::{
-    alerta_info, authed_request, confirmar_verificacion, sesion_ok, solicitar_verificacion,
-    telefono_verificado,
+    alerta_info, archivo_a_b64_de, authed_request, confirmar_verificacion, ine_verificada,
+    kyc_verificar, mensaje_kyc, mensaje_recibo, parsear_kyc, parsear_recibo, recibo_subir,
+    sesion_ok, solicitar_verificacion, telefono_verificado, validar_archivo,
 };
 use crate::components::plan_modal::PlanModal;
+
+/// Fase de un flujo de subida de archivo (INE o recibo): reposo → leyendo el
+/// archivo → enviando al backend.
+#[derive(Clone, Copy, PartialEq)]
+enum Fase {
+    Reposo,
+    Leyendo,
+    Enviando,
+}
 
 #[component]
 pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Element {
@@ -30,8 +40,22 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
     let mut ver_error = use_signal(|| None::<String>);
     let mut verificado = use_signal(|| false);
 
+    // Verificación de INE por OCR (contrato ola 5): archivo guardado como
+    // handle (la lectura real ocurre al presionar el botón) + semáforo.
+    let mut kyc_archivo = use_signal(|| None::<dioxus_elements::FileData>);
+    let mut kyc_fase = use_signal(|| Fase::Reposo);
+    let mut kyc_error = use_signal(|| None::<String>);
+    let mut kyc_res = use_signal(|| None::<(&'static str, String)>);
+
+    // Score por recibos de servicios (contrato ola 5).
+    let mut recibo_tipo = use_signal(|| "luz".to_string());
+    let mut recibo_archivo = use_signal(|| None::<dioxus_elements::FileData>);
+    let mut recibo_fase = use_signal(|| Fase::Reposo);
+    let mut recibo_error = use_signal(|| None::<String>);
+    let mut recibo_res = use_signal(|| None::<String>);
+
     // Al cargar/cambiar el cliente en el panel: prellenar el teléfono y
-    // reiniciar el flujo OTP.
+    // reiniciar los flujos OTP, KYC y recibos.
     use_effect(move || {
         if let Some(cliente) = search_result() {
             ver_tel.set(cliente["telefono"].as_str().unwrap_or("").to_string());
@@ -39,8 +63,29 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
             ver_codigo.set(String::new());
             ver_enviado.set(false);
             ver_error.set(None);
+            kyc_archivo.set(None);
+            kyc_fase.set(Fase::Reposo);
+            kyc_error.set(None);
+            kyc_res.set(None);
+            recibo_tipo.set("luz".to_string());
+            recibo_archivo.set(None);
+            recibo_fase.set(Fase::Reposo);
+            recibo_error.set(None);
+            recibo_res.set(None);
         }
     });
+
+    // Estado derivado del cliente cargado: CURP para las subidas y si la INE
+    // ya quedó verificada (JSON del servidor o lograda en esta sesión).
+    let curp_capturada = search_result()
+        .and_then(|c| c["curp"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let ine_ya = search_result().is_some_and(|c| ine_verificada(&c));
+    let kyc_hecho = ine_ya || kyc_res().is_some_and(|(color, _)| color == "green");
+    // Cada onclick de rsx mueve sus capturas: un clon por flujo evita el
+    // doble move de la CURP.
+    let curp_kyc = curp_capturada.clone();
+    let curp_recibo = curp_capturada.clone();
 
     let status = search_status();
     rsx! {
@@ -129,11 +174,17 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
                             div { class: "text-slate-900 font-medium dark:text-white", "{cliente[\"nivel_riesgo\"].as_str().unwrap_or(\"—\")}" }
                         }
                     }
-                    if verificado() {
-                        div { class: "mt-6 flex items-center gap-2",
-                            span { class: "text-sm font-semibold text-green-700 dark:text-green-400", "✓ Verificado" }
+                    if verificado() || kyc_hecho {
+                        div { class: "mt-6 flex items-center gap-4",
+                            if verificado() {
+                                span { class: "text-sm font-semibold text-green-700 dark:text-green-400", "✓ Teléfono" }
+                            }
+                            if kyc_hecho {
+                                span { class: "text-sm font-semibold text-green-700 dark:text-green-400", "✓ INE" }
+                            }
                         }
-                    } else {
+                    }
+                    if !verificado() {
                         div { class: "mt-6 pt-4 border-t border-slate-200 dark:border-slate-700",
                             div { class: "text-slate-900 font-medium dark:text-white mb-2", "Verificar teléfono" }
                             if let Some(msg) = ver_error() {
@@ -237,6 +288,141 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
                                         (false, false) => "Enviar código",
                                     }}
                                 }
+                            }
+                        }
+                    }
+                    if !ine_ya {
+                        div { class: "mt-6 pt-4 border-t border-slate-200 dark:border-slate-700",
+                            div { class: "text-slate-900 font-medium dark:text-white mb-2", "Verificar INE" }
+                            if let Some(msg) = kyc_error() {
+                                p { class: "text-red-500 text-sm mb-2", "{msg}" }
+                            }
+                            if let Some((color, msg)) = kyc_res() {
+                                p {
+                                    class: if color == "green" { "text-green-700 dark:text-green-400 text-sm mb-2" } else { "text-amber-700 dark:text-amber-400 text-sm mb-2" },
+                                    "{msg}"
+                                }
+                            }
+                            if !kyc_hecho {
+                                div { class: "flex flex-col gap-3",
+                                    InputArchivo { archivo: kyc_archivo, error: kyc_error }
+                                    if let Some(f) = kyc_archivo() {
+                                        div { class: "text-xs text-slate-500 dark:text-slate-400", "Archivo: {f.name()}" }
+                                    }
+                                    button {
+                                        class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-2 rounded-lg",
+                                        disabled: kyc_fase() != Fase::Reposo,
+                                        onclick: move |_| {
+                                            let Some(file) = kyc_archivo() else { return };
+                                            let curp_cliente = curp_kyc.clone();
+                                            let token_val = token();
+                                            kyc_error.set(None);
+                                            kyc_res.set(None);
+                                            kyc_fase.set(Fase::Leyendo);
+                                            spawn(async move {
+                                                let b64 = match archivo_a_b64_de(&file).await {
+                                                    Ok(b) => b,
+                                                    Err(e) => {
+                                                        kyc_fase.set(Fase::Reposo);
+                                                        kyc_error.set(Some(e));
+                                                        return;
+                                                    }
+                                                };
+                                                let mime = file.content_type().unwrap_or_default();
+                                                kyc_fase.set(Fase::Enviando);
+                                                match kyc_verificar(&curp_cliente, &b64, &mime, &token_val).send().await {
+                                                    Ok(res) => {
+                                                        if sesion_ok(&res, is_authenticated, token) {
+                                                            match res.json::<serde_json::Value>().await {
+                                                                Ok(data) => match parsear_kyc(&data) {
+                                                                    Some(kyc) => kyc_res.set(Some(mensaje_kyc(&kyc, &curp_cliente))),
+                                                                    None => kyc_error.set(Some(data["message"].as_str().unwrap_or("Error del servidor").to_string())),
+                                                                },
+                                                                Err(_) => kyc_error.set(Some("Error al procesar respuesta".to_string())),
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(_) => kyc_error.set(Some("Error de conexión con el servidor".to_string())),
+                                                }
+                                                kyc_fase.set(Fase::Reposo);
+                                            });
+                                        },
+                                        {match kyc_fase() {
+                                            Fase::Leyendo => "Leyendo archivo...",
+                                            Fase::Enviando => "Enviando...",
+                                            Fase::Reposo => "Verificar INE",
+                                        }}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "mt-6 pt-4 border-t border-slate-200 dark:border-slate-700",
+                        div { class: "text-slate-900 font-medium dark:text-white mb-1", "Score por recibos de servicios" }
+                        div { class: "text-xs text-slate-500 dark:text-slate-400 mb-3", "Cada recibo legible de servicios suma +25 al score (máximo 2)." }
+                        if let Some(msg) = recibo_error() {
+                            p { class: "text-red-500 text-sm mb-2", "{msg}" }
+                        }
+                        if let Some(msg) = recibo_res() {
+                            p { class: "text-green-700 dark:text-green-400 text-sm mb-2", "{msg}" }
+                        }
+                        div { class: "flex flex-col gap-3",
+                            select {
+                                class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
+                                value: "{recibo_tipo()}",
+                                onchange: move |e| recibo_tipo.set(e.value()),
+                                option { value: "luz", "Luz" }
+                                option { value: "agua", "Agua" }
+                                option { value: "telefono", "Teléfono" }
+                            }
+                            InputArchivo { archivo: recibo_archivo, error: recibo_error }
+                            if let Some(f) = recibo_archivo() {
+                                div { class: "text-xs text-slate-500 dark:text-slate-400", "Archivo: {f.name()}" }
+                            }
+                            button {
+                                class: "bg-blue-600 hover:bg-blue-700 text-white font-semibold px-3 py-2 rounded-lg",
+                                disabled: recibo_fase() != Fase::Reposo,
+                                onclick: move |_| {
+                                    let Some(file) = recibo_archivo() else { return };
+                                    let curp_cliente = curp_recibo.clone();
+                                    let tipo = recibo_tipo();
+                                    let token_val = token();
+                                    recibo_error.set(None);
+                                    recibo_res.set(None);
+                                    recibo_fase.set(Fase::Leyendo);
+                                    spawn(async move {
+                                        let b64 = match archivo_a_b64_de(&file).await {
+                                            Ok(b) => b,
+                                            Err(e) => {
+                                                recibo_fase.set(Fase::Reposo);
+                                                recibo_error.set(Some(e));
+                                                return;
+                                            }
+                                        };
+                                        let mime = file.content_type().unwrap_or_default();
+                                        recibo_fase.set(Fase::Enviando);
+                                        match recibo_subir(&curp_cliente, &b64, &mime, &tipo, &token_val).send().await {
+                                            Ok(res) => {
+                                                if sesion_ok(&res, is_authenticated, token) {
+                                                    match res.json::<serde_json::Value>().await {
+                                                        Ok(data) => match parsear_recibo(&data) {
+                                                            Some(r) => recibo_res.set(Some(mensaje_recibo(&r))),
+                                                            None => recibo_error.set(Some(data["message"].as_str().unwrap_or("Error del servidor").to_string())),
+                                                        },
+                                                        Err(_) => recibo_error.set(Some("Error al procesar respuesta".to_string())),
+                                                    }
+                                                }
+                                            }
+                                            Err(_) => recibo_error.set(Some("Error de conexión con el servidor".to_string())),
+                                        }
+                                        recibo_fase.set(Fase::Reposo);
+                                    });
+                                },
+                                {match recibo_fase() {
+                                    Fase::Leyendo => "Leyendo archivo...",
+                                    Fase::Enviando => "Enviando...",
+                                    Fase::Reposo => "Subir recibo",
+                                }}
                             }
                         }
                     }
@@ -347,6 +533,34 @@ pub fn AltaCliente(token: Signal<String>, is_authenticated: Signal<bool>) -> Ele
             if show_plan_modal() {
                 PlanModal { show_plan_modal, curp: curp_input(), token, is_authenticated }
             }
+        }
+    }
+}
+
+/// Input de archivo compartido por los paneles KYC y recibos: valida mime y
+/// tamaño ANTES de guardar el handle del archivo — nada sale del navegador si
+/// falla la validación client-side (los bytes se leen al presionar el botón).
+#[component]
+fn InputArchivo(
+    mut archivo: Signal<Option<dioxus_elements::FileData>>,
+    mut error: Signal<Option<String>>,
+) -> Element {
+    rsx! {
+        input {
+            class: "block w-full text-sm text-slate-500 border border-slate-300 rounded-lg cursor-pointer bg-white dark:text-slate-400 dark:border-slate-600 dark:bg-slate-800 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:font-semibold hover:file:bg-blue-100 dark:file:bg-slate-700 dark:file:text-slate-200 dark:hover:file:bg-slate-600",
+            r#type: "file",
+            accept: "image/png,image/jpeg,image/webp",
+            onchange: move |e| {
+                archivo.set(None);
+                let Some(file) = e.files().first().cloned() else {
+                    error.set(Some("Selecciona un archivo".to_string()));
+                    return;
+                };
+                match validar_archivo(file.size(), file.content_type().as_deref()) {
+                    Some(motivo) => error.set(Some(motivo)),
+                    None => archivo.set(Some(file)),
+                }
+            },
         }
     }
 }
