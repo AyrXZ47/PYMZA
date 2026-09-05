@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod models;
+mod ocr;
 mod otp;
 mod routes;
 
