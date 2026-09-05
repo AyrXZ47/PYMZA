@@ -42,6 +42,7 @@
     --color-emerald-400: oklch(76.5% 0.177 163.223);
     --color-emerald-500: oklch(69.6% 0.17 162.48);
     --color-emerald-600: oklch(59.6% 0.145 163.225);
+    --color-blue-50: oklch(97% 0.014 254.604);
     --color-blue-100: oklch(93.2% 0.032 255.585);
     --color-blue-400: oklch(70.7% 0.165 254.624);
     --color-blue-500: oklch(62.3% 0.214 259.815);
@@ -313,6 +314,9 @@
   .mb-2 {
     margin-bottom: calc(var(--spacing) * 2);
   }
+  .mb-3 {
+    margin-bottom: calc(var(--spacing) * 3);
+  }
   .mb-4 {
     margin-bottom: calc(var(--spacing) * 4);
   }
@@ -324,6 +328,9 @@
   }
   .mb-10 {
     margin-bottom: calc(var(--spacing) * 10);
+  }
+  .block {
+    display: block;
   }
   .flex {
     display: flex;
@@ -807,6 +814,32 @@
     --tw-outline-style: none;
     outline-style: none;
   }
+  .file\:mr-3::file-selector-button {
+    margin-right: calc(var(--spacing) * 3);
+  }
+  .file\:rounded-lg::file-selector-button {
+    border-radius: var(--radius-lg);
+  }
+  .file\:border-0::file-selector-button {
+    border-style: var(--tw-border-style);
+    border-width: 0px;
+  }
+  .file\:bg-blue-50::file-selector-button {
+    background-color: var(--color-blue-50);
+  }
+  .file\:px-3::file-selector-button {
+    padding-inline: calc(var(--spacing) * 3);
+  }
+  .file\:py-2::file-selector-button {
+    padding-block: calc(var(--spacing) * 2);
+  }
+  .file\:font-semibold::file-selector-button {
+    --tw-font-weight: var(--font-weight-semibold);
+    font-weight: var(--font-weight-semibold);
+  }
+  .file\:text-blue-700::file-selector-button {
+    color: var(--color-blue-700);
+  }
   @media (hover: hover) {
     .hover\:bg-blue-700:hover {
       background-color: var(--color-blue-700);
@@ -831,6 +864,9 @@
     }
     .hover\:underline:hover {
       text-decoration-line: underline;
+    }
+    .hover\:file\:bg-blue-100:hover::file-selector-button {
+      background-color: var(--color-blue-100);
     }
   }
   .focus\:border-blue-500:focus {
@@ -1030,6 +1066,12 @@
   .dark\:placeholder-slate-500:where(.dark, .dark *)::placeholder {
     color: var(--color-slate-500);
   }
+  .dark\:file\:bg-slate-700:where(.dark, .dark *)::file-selector-button {
+    background-color: var(--color-slate-700);
+  }
+  .dark\:file\:text-slate-200:where(.dark, .dark *)::file-selector-button {
+    color: var(--color-slate-200);
+  }
   @media (hover: hover) {
     .dark\:hover\:bg-red-900\/20:where(.dark, .dark *):hover {
       background-color: color-mix(in srgb, oklch(39.6% 0.141 25.723) 20%, transparent);
@@ -1050,6 +1092,9 @@
     }
     .dark\:hover\:text-white:where(.dark, .dark *):hover {
       color: var(--color-white);
+    }
+    .dark\:hover\:file\:bg-slate-600:where(.dark, .dark *):hover::file-selector-button {
+      background-color: var(--color-slate-600);
     }
   }
 }
