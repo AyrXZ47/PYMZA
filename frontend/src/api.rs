@@ -212,6 +212,109 @@ pub struct PagoInfo {
     pub saldo_restante: f64,
 }
 
+// --- Contrato API ola 4: resumen de cartera (GET /api/creditos/resumen) y
+// registro de pagos (POST /api/creditos/pagos). Shape exacta en plan.md. ---
+
+/// Mes de `cobrado_vs_por_cobrar`: pagos registrados vs cuotas esperadas.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ResumenMes {
+    pub mes: String,
+    pub cobrado: f64,
+    pub por_cobrar: f64,
+}
+
+/// Horizonte de `flujo_proyectado` (30/60/90 días).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ResumenHorizonte {
+    pub horizonte: i64,
+    pub monto: f64,
+}
+
+/// Bucket de `aging`: saldo vencido por antigüedad.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ResumenBucket {
+    pub bucket: String,
+    pub monto: f64,
+}
+
+/// Deudor de `top_deudores` (saldo = total a pagar − pagos registrados).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ResumenDeudor {
+    pub cliente_curp: String,
+    pub nombre: String,
+    pub saldo: f64,
+}
+
+/// Bucket de `distribucion_montos`: n de planes por monto_total.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ResumenBucketN {
+    pub bucket: String,
+    pub n: i64,
+}
+
+/// Resumen de cartera del tenant (fuente de las 6 gráficas del dashboard).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Resumen {
+    pub cobrado_vs_por_cobrar: Vec<ResumenMes>,
+    pub tasa_morosidad: f64,
+    pub flujo_proyectado: Vec<ResumenHorizonte>,
+    pub aging: Vec<ResumenBucket>,
+    pub top_deudores: Vec<ResumenDeudor>,
+    pub distribucion_montos: Vec<ResumenBucketN>,
+}
+
+/// Parseo puro del body de `GET /api/creditos/resumen` (testeable en host).
+/// Tolerante: campos faltantes → vacíos (el dashboard muestra "Sin datos aún").
+pub fn parsear_resumen(data: &serde_json::Value) -> Option<Resumen> {
+    if data["status"] == "success" {
+        serde_json::from_value(data["resumen"].clone()).ok()
+    } else {
+        None
+    }
+}
+
+/// Descarga el resumen de cartera del tenant. Ante un 401 mata la sesión y
+/// devuelve error (el dashboard lo muestra; el logout lo maneja `sesion_ok`).
+pub async fn obtener_resumen(
+    token: &str,
+    is_authenticated: Signal<bool>,
+    token_sig: Signal<String>,
+) -> Result<Resumen, String> {
+    let res = authed_request(reqwest::Method::GET, "/api/creditos/resumen".to_string(), token)
+        .send()
+        .await
+        .map_err(|e| format!("Sin conexión con el servidor: {e}"))?;
+    if !sesion_ok(&res, is_authenticated, token_sig) {
+        return Err("Sesión expirada".to_string());
+    }
+    let data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida del servidor: {e}"))?;
+    parsear_resumen(&data).ok_or_else(|| "No se pudo leer el resumen de cartera".to_string())
+}
+
+/// Request a `POST /api/creditos/pagos`: registra el pago de la `cuota` de un
+/// plan con `monto` (debe ser el `pago_mensual` del plan, ±1 centavo).
+pub fn registrar_pago(plan_id: &str, cuota: i64, monto: f64, token: &str) -> reqwest::RequestBuilder {
+    authed_request(reqwest::Method::POST, "/api/creditos/pagos".to_string(), token)
+        .json(&serde_json::json!({ "plan_id": plan_id, "cuota": cuota, "monto": monto }))
+}
+
+/// Siguiente cuota impaga de un plan: `Some(n)` si existe una cuota después de
+/// las ya pagadas; `None` si el plan está liquidado (o datos raros).
+pub fn siguiente_cuota_impaga(plazo_meses: i64, cuotas_pagadas: i64) -> Option<i64> {
+    let siguiente = cuotas_pagadas.max(0) + 1;
+    (siguiente <= plazo_meses).then_some(siguiente)
+}
+
+
 // --- Verificación de teléfono por OTP (contrato API ola 3). ---
 
 /// Request a `POST /api/verificaciones/solicitar`: pide un código de 6 dígitos
@@ -392,5 +495,101 @@ mod tests {
         assert!(!telefono_verificado(&serde_json::json!({ "telefono_verificado": false })));
         // cliente de antes de la ola 3: sin el campo → no verificado
         assert!(!telefono_verificado(&serde_json::json!({ "curp": "GACM940101HDFRRR07" })));
+    }
+
+    /// Shape EXACTA del contrato API ola 4 (plan.md § Contrato API ola 4).
+    fn resumen_contrato() -> serde_json::Value {
+        serde_json::json!({
+            "status": "success",
+            "resumen": {
+                "cobrado_vs_por_cobrar": [
+                    {"mes": "2026-04", "cobrado": 0.0, "por_cobrar": 0.0},
+                    {"mes": "2026-05", "cobrado": 0.0, "por_cobrar": 0.0},
+                    {"mes": "2026-06", "cobrado": 0.0, "por_cobrar": 0.0},
+                    {"mes": "2026-07", "cobrado": 0.0, "por_cobrar": 0.0},
+                    {"mes": "2026-08", "cobrado": 0.0, "por_cobrar": 0.0},
+                    {"mes": "2026-09", "cobrado": 1200.0, "por_cobrar": 3600.0}
+                ],
+                "tasa_morosidad": 0.25,
+                "flujo_proyectado": [
+                    {"horizonte": 30, "monto": 1200.0},
+                    {"horizonte": 60, "monto": 2400.0},
+                    {"horizonte": 90, "monto": 3600.0}
+                ],
+                "aging": [
+                    {"bucket": "0-30", "monto": 800.0},
+                    {"bucket": "31-60", "monto": 400.0},
+                    {"bucket": "61-90", "monto": 0.0},
+                    {"bucket": "90+", "monto": 0.0}
+                ],
+                "top_deudores": [
+                    {"cliente_curp": "GACM940101HDFRRR07", "nombre": "María Guadalupe", "saldo": 9600.0}
+                ],
+                "distribucion_montos": [
+                    {"bucket": "0-1k", "n": 2},
+                    {"bucket": "1k-5k", "n": 1},
+                    {"bucket": "5k+", "n": 0}
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn parsear_resumen_con_shape_del_contrato() {
+        let r = parsear_resumen(&resumen_contrato()).expect("el shape del contrato debe parsear");
+        assert_eq!(r.cobrado_vs_por_cobrar.len(), 6);
+        assert_eq!(r.cobrado_vs_por_cobrar[5].mes, "2026-09");
+        assert_eq!(r.cobrado_vs_por_cobrar[5].cobrado, 1200.0);
+        assert_eq!(r.cobrado_vs_por_cobrar[5].por_cobrar, 3600.0);
+        // semáforo del contrato: 0.25 = >20% → rojo
+        assert!(crate::components::charts::semaforo_morosidad(r.tasa_morosidad).contains("red"));
+        assert_eq!(
+            r.flujo_proyectado.iter().map(|f| f.horizonte).collect::<Vec<_>>(),
+            [30, 60, 90]
+        );
+        assert_eq!(r.flujo_proyectado[1].monto, 2400.0);
+        assert_eq!(r.aging.iter().map(|a| a.bucket.clone()).collect::<Vec<_>>(), ["0-30", "31-60", "61-90", "90+"]);
+        assert_eq!(r.top_deudores[0].nombre, "María Guadalupe");
+        assert_eq!(r.top_deudores[0].saldo, 9600.0);
+        assert_eq!(r.distribucion_montos[2].n, 0);
+    }
+
+    #[test]
+    fn parsear_resumen_status_error_es_none() {
+        assert_eq!(parsear_resumen(&serde_json::json!({ "status": "error" })), None);
+        assert_eq!(parsear_resumen(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn parsear_resumen_tolera_resumen_parcial() {
+        let data = serde_json::json!({ "status": "success", "resumen": { "tasa_morosidad": 0.1 } });
+        let r = parsear_resumen(&data).expect("resumen parcial debe parsear a vacíos");
+        assert_eq!(r.tasa_morosidad, 0.1);
+        assert!(r.cobrado_vs_por_cobrar.is_empty());
+        assert!(r.top_deudores.is_empty());
+        assert!(r.aging.is_empty());
+    }
+
+    #[test]
+    fn registrar_pago_construye_post_con_plan_cuota_y_monto() {
+        let request = registrar_pago("665f1a2b3c4d5e6f7a8b9c0d", 2, 1030.0, "tok").build().unwrap();
+        assert_eq!(*request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/api/creditos/pagos");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "plan_id": "665f1a2b3c4d5e6f7a8b9c0d", "cuota": 2, "monto": 1030.0 })
+        );
+    }
+
+    #[test]
+    fn siguiente_cuota_impaga_avanza_y_para_en_el_plazo() {
+        assert_eq!(siguiente_cuota_impaga(12, 0), Some(1));
+        assert_eq!(siguiente_cuota_impaga(12, 5), Some(6));
+        assert_eq!(siguiente_cuota_impaga(12, 12), None, "liquidado");
+        assert_eq!(siguiente_cuota_impaga(12, 15), None, "datos raros");
+        assert_eq!(siguiente_cuota_impaga(0, 0), None);
+        assert_eq!(siguiente_cuota_impaga(12, -3), Some(1), "pagadas negativas no rompen");
     }
 }
