@@ -74,6 +74,8 @@ pub async fn crear_cliente(
         correo: payload.correo,
         // La verificación fuerte es por OTP (verificaciones); siempre nace false.
         telefono_verificado: false,
+        // La INE se verifica después (KYC por OCR); siempre nace false.
+        ine_verificada: false,
         alerta: None,
     };
 

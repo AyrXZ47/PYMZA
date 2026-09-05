@@ -21,6 +21,11 @@ pub struct Cliente {
     pub correo: Option<String>,
     #[serde(default)]
     pub telefono_verificado: bool,
+    // Ola 5: la INE subida es legible y su CURP coincide (KYC). Clientes
+    // previos sin el campo se leen con default. SIEMPRE se serializa: la UI
+    // lee el badge.
+    #[serde(default)]
+    pub ine_verificada: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alerta: Option<AlertaMorosidad>,
 }
