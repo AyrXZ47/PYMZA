@@ -24,6 +24,7 @@ Frontend (Dioxus WASM) ──HTTP/JSON──> Backend (Axum/Tokio) ──> Mongo
 
 - [`docs/API.md`](docs/API.md) — referencia completa de los 10 endpoints (payloads y respuestas).
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — checklist de visión de PYMZA.md consolidado con el estado real del código.
+- [`docs/DEPLOY.md`](docs/DEPLOY.md) — guía de despliegue en Railway (backend, frontend y verificación post-deploy).
 
 ## Cómo Empezar
 

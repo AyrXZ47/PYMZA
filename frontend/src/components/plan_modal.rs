@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::api::{authed_request, sesion_ok, PagoInfo};
+use crate::api::{authed_request, descargar_archivo, descargar_contrato, sesion_ok, PagoInfo};
 
 #[component]
 pub fn PlanModal(
@@ -213,8 +213,9 @@ pub fn PlanModal(
                                         let monto_num: f64 = monto_total.parse().unwrap_or(0.0);
                                         let plazo_num: i32 = plazo.parse().unwrap_or(3);
                                         // Contrato ola 1: la empresa sale del JWT, no del body.
+                                        // (clone: `cliente_curp` se reusa abajo para descargar el contrato)
                                         let body = serde_json::json!({
-                                            "cliente_curp": cliente_curp,
+                                            "cliente_curp": cliente_curp.clone(),
                                             "producto": producto,
                                             "monto_total": monto_num,
                                             "plazo_meses": plazo_num,
@@ -237,6 +238,23 @@ pub fn PlanModal(
                                                         plan_monto.set(String::new());
                                                         plan_plazo.set("3".to_string());
                                                         terms_accepted.set(false);
+                                                        // Contrato PDF (ola 6): descarga automática del
+                                                        // contrato del plan recién autorizado (el id viene
+                                                        // en la respuesta).
+                                                        if let Some(plan_id) = data["plan_id"].as_str() {
+                                                            match descargar_contrato(
+                                                                plan_id,
+                                                                &cliente_curp,
+                                                                &token_val,
+                                                                is_authenticated,
+                                                                token,
+                                                            )
+                                                            .await
+                                                            {
+                                                                Ok((bytes, nombre)) => descargar_archivo(&bytes, &nombre),
+                                                                Err(_) => {} // ponytail: aquí el modal ya cerró y no hay dónde mostrar el error; la cartera ofrece el botón con errores visibles
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
