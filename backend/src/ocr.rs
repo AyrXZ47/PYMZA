@@ -302,6 +302,27 @@ mod tests {
     }
 
     #[test]
+    fn buscar_monto_lee_el_output_real_del_fixture_recibo() {
+        // Salida verificada de (misma config que usa `extraer_texto` en producción):
+        //   tesseract backend/scripts/fixture_recibo.png stdout -l spa --psm 6
+        // Cierra la E2 del auditor ola 5: el humo de recibos queda reproducible.
+        let texto = concat!(
+            "RECIBO DE SERVICIO\n",
+            "SERVICIO: LUZ\n",
+            "PERIODO: 01/08/2026 AL 31/08/20\n",
+            "FOLIO: 98324\n",
+            "CLIENTE: MARIA GOMEZ LOPEZ\n",
+            "\n",
+            "TOTAL: $450.00 MXN\n",
+            "\n",
+            "PAGO ANTES DE VENCIMIENTO: 12/0\n",
+            "FIRMA Y SELLO\n",
+            "BUEN PAGADOR: RECIBO CON MONTO\n",
+        );
+        assert_eq!(buscar_monto(texto), Some(450.0));
+    }
+
+    #[test]
     fn buscar_monto_lee_formatos_del_contrato() {
         assert_eq!(buscar_monto("IMPORTE: $1,234.56"), Some(1234.56));
         assert_eq!(buscar_monto("TOTAL: $450.00"), Some(450.0));
