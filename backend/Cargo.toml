@@ -25,3 +25,7 @@ base64 = "0.22"
 reqwest = { version = "0.11", features = ["json"] } # default-tls (OpenSSL), coherente con mongodb openssl-tls
 rand = "0.8"
 sha2 = "0.10"
+
+# Ola 6 — rate limit por IP en las rutas públicas. 0.1.0 es la ÚLTIMA compatible
+# con axum 0.6 (http 0.2 / tower 0.4); 0.2+ exige http 1.0 (axum 0.7+).
+tower_governor = "0.1.0"
