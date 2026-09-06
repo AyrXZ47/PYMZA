@@ -11,11 +11,20 @@ RUN apt-get update \
 
 FROM dx AS wasm
 WORKDIR /app
+# API_BASE inyectable en build (docker build --build-arg API_BASE=<url> .):
+# se declara como ENV ANTES de `dx build` para que `option_env!("API_BASE")`
+# en src/api.rs la capture en compile-time del WASM.
+ARG API_BASE=http://127.0.0.1:3000
+ENV API_BASE=${API_BASE}
 COPY frontend/Cargo.toml frontend/Dioxus.toml frontend/tailwind.css ./
 COPY frontend/src ./src
 COPY frontend/assets ./assets
 # Compila WASM + assets (tailwind.css ya está commiteado como fallback).
 # --debug-symbols=false: sin DWARF el wasm-opt 129 no crashea (SIGABRT por DWARF5).
+# ponytail: cargo solo recompila si cambia el código, no si cambia API_BASE —
+# Docker compensa porque el ENV bustea el cache de las capas siguientes. Si
+# algún día se cachea el target/ entre builds, pasar API_BASE a un archivo
+# fuente generado para forzar la recompilación.
 RUN dx build --release --debug-symbols=false
 
 FROM nginx:1.27-alpine AS runtime
