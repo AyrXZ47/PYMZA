@@ -7,7 +7,7 @@ mod routes;
 
 use std::net::SocketAddr;
 
-use axum::{extract::State, routing::{get, post}, Json, Router};
+use axum::{extract::{State, DefaultBodyLimit}, routing::{get, post}, Json, Router};
 
 use auth::{cors_layer, jwt_secret, login_empresa, EmpresaSession};
 use routes::cliente::{buscar_cliente, crear_cliente, reportar_cliente};
@@ -47,6 +47,11 @@ async fn main() {
         .route("/api/verificaciones/solicitar", post(solicitar_verificacion))
         .route("/api/verificaciones/confirmar", post(confirmar_verificacion))
         .layer(cors_layer())
+        // Ola 6 (cierra E1 del auditor ola 5): el límite global pasa de 2MB a 3MB
+        // para que el b64 de un archivo real de hasta ~2MB (~2.7MB en base64)
+        // llegue al handler, que es quien rechaza >2MB decodificados con el
+        // 400 del contrato — el 413 solo aparece por encima de la red de seguridad.
+        .layer(DefaultBodyLimit::max(3_000_000))
         .with_state(db_client);
 
     // En Docker el contenedor debe escuchar en 0.0.0.0:3000 (compose lo pasa por env);

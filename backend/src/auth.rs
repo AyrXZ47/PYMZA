@@ -200,15 +200,36 @@ fn password_correcta(password: &str, hash_almacenado: &str) -> bool {
     }
 }
 
+/// Parsea la env `ALLOWED_ORIGINS` (separada por comas): recorta espacios y
+/// descarta entradas vacías. Función PURA, testeada.
+fn parsear_origenes(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub(crate) fn cors_layer() -> CorsLayer {
-    // ponytail: allowlist fija de dev local (frontend `dx serve` en :8080, API en
-    // 127.0.0.1:3000). Para producción, sacar los orígenes a una env var
-    // (p. ej. ALLOWED_ORIGINS) y construir el array desde ahí.
+    // Ola 6: orígenes desde `ALLOWED_ORIGINS` (separada por comas). Default dev
+    // (frontend `dx serve` en :8080) si la env falta o queda vacía: sin cambio
+    // de comportamiento en dev. Un origen con caracteres inválidos para un
+    // HeaderValue (p. ej. saltos de línea) se descarta, no rompe el arranque.
+    let lista = std::env::var("ALLOWED_ORIGINS")
+        .ok()
+        .map(|v| parsear_origenes(&v))
+        .unwrap_or_default();
+    let origenes = if lista.is_empty() {
+        parsear_origenes("http://localhost:8080,http://127.0.0.1:8080")
+    } else {
+        lista
+    };
+    let permitidos: Vec<HeaderValue> = origenes
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
     CorsLayer::new()
-        .allow_origin([
-            HeaderValue::from_static("http://localhost:8080"),
-            HeaderValue::from_static("http://127.0.0.1:8080"),
-        ])
+        .allow_origin(permitidos)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any)
 }
@@ -296,5 +317,26 @@ mod tests {
         let token =
             emite_jwt("demo@pymza.mx", "Ferretería El Tornillo", "otro-secreto-distinto").unwrap();
         assert!(validar_jwt(&token, SECRETO_TEST).is_err());
+    }
+
+    #[test]
+    fn parsear_origenes_separados_por_comas() {
+        assert_eq!(parsear_origenes(""), Vec::<String>::new());
+        assert_eq!(parsear_origenes("   "), Vec::<String>::new());
+        assert_eq!(parsear_origenes(","), Vec::<String>::new());
+        assert_eq!(
+            parsear_origenes("http://localhost:8080,http://127.0.0.1:8080"),
+            vec!["http://localhost:8080", "http://127.0.0.1:8080"]
+        );
+        // con espacios y vacíos intermedios
+        assert_eq!(
+            parsear_origenes(" https://mipyme.mx , , https://demo.pymza.mx,"),
+            vec!["https://mipyme.mx", "https://demo.pymza.mx"]
+        );
+        // un solo origen
+        assert_eq!(
+            parsear_origenes("https://pymza.mx"),
+            vec!["https://pymza.mx"]
+        );
     }
 }
