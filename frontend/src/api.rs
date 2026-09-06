@@ -315,6 +315,97 @@ pub fn siguiente_cuota_impaga(plazo_meses: i64, cuotas_pagadas: i64) -> Option<i
 }
 
 
+// --- Contrato PDF (contrato API ola 6): GET /api/creditos/{plan_id}/contrato. ---
+
+/// Request a `GET /api/creditos/{plan_id}/contrato`: devuelve el PDF del plan
+/// (bytes, `Content-Type: application/pdf`) con su `Content-Disposition`.
+pub fn contrato_request(plan_id: &str, token: &str) -> reqwest::RequestBuilder {
+    authed_request(
+        reqwest::Method::GET,
+        format!("/api/creditos/{plan_id}/contrato"),
+        token,
+    )
+}
+
+/// Nombre de archivo del contrato (puro, testeable en host): usa el `filename`
+/// del header `Content-Disposition` si viene; si no, `contrato-<curp>.pdf`.
+pub fn nombre_archivo_contrato(content_disposition: Option<&str>, curp: &str) -> String {
+    content_disposition
+        .and_then(|h| {
+            h.split(';')
+                .map(str::trim)
+                .find_map(|p| p.strip_prefix("filename="))
+                .map(|v| v.trim_matches('"').to_string())
+        })
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| format!("contrato-{curp}.pdf"))
+}
+
+/// Descarga el PDF del contrato del plan. Ante un 401 mata la sesión (vía
+/// `sesion_ok`); devuelve `(bytes, nombre de archivo)` listos para descargar.
+pub async fn descargar_contrato(
+    plan_id: &str,
+    curp: &str,
+    token: &str,
+    is_authenticated: Signal<bool>,
+    token_sig: Signal<String>,
+) -> Result<(Vec<u8>, String), String> {
+    let res = contrato_request(plan_id, token)
+        .send()
+        .await
+        .map_err(|e| format!("Sin conexión con el servidor: {e}"))?;
+    if !sesion_ok(&res, is_authenticated, token_sig) {
+        return Err("Sesión expirada".to_string());
+    }
+    if !res.status().is_success() {
+        return Err(format!(
+            "No se pudo descargar el contrato (HTTP {})",
+            res.status()
+        ));
+    }
+    // Headers primero: `bytes()` consume la respuesta.
+    let header = res
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = res
+        .bytes()
+        .await
+        .map_err(|_| "No se pudo leer el contrato".to_string())?
+        .to_vec();
+    Ok((bytes, nombre_archivo_contrato(header.as_deref(), curp)))
+}
+
+/// JS que dispara la descarga de un PDF desde sus bytes base64: Blob →
+/// object URL → `<a download>` click → limpia el object URL. El nombre va
+/// como string JSON (mismo escaping que los items de storage).
+fn js_descarga(b64: &str, nombre: &str) -> String {
+    format!(
+        "const bin = atob('{}'); const bytes = new Uint8Array(bin.length); \
+         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i); \
+         const url = URL.createObjectURL(new Blob([bytes], {{ type: 'application/pdf' }})); \
+         const a = document.createElement('a'); a.href = url; a.download = {}; \
+         document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);",
+        b64,
+        serde_json::to_string(nombre).unwrap_or_default()
+    )
+}
+
+/// Dispara la descarga del archivo en el navegador (no-op en host).
+// ponytail: los bytes van base64 dentro de un eval porque web-sys/js-sys no
+// son deps directas y no se pueden añadir (cero deps nuevas). Techo: PDFs de
+// ~1 MB+ pagarán el +33% del base64 en un string JS; si crece, migrar este
+// único helper a web_sys::Blob directo.
+pub fn descargar_archivo(bytes: &[u8], nombre: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dioxus::document::eval(&js_descarga(&archivo_a_b64(bytes), nombre));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (bytes, nombre);
+}
+
 // --- Verificación de teléfono por OTP (contrato API ola 3). ---
 
 /// Request a `POST /api/verificaciones/solicitar`: pide un código de 6 dígitos
@@ -969,5 +1060,68 @@ mod tests {
             mensaje_recibo(&sin_monto),
             "Score: 575 · Riesgo: Medio · Recibos 1/2"
         );
+    }
+
+    // --- Contrato PDF (ola 6). ---
+
+    #[test]
+    fn contrato_request_construye_get_protegido_sin_body() {
+        let request = contrato_request("665f1a2b3c4d5e6f7a8b9c0d", "tok").build().unwrap();
+        assert_eq!(*request.method(), reqwest::Method::GET);
+        assert_eq!(
+            request.url().path(),
+            "/api/creditos/665f1a2b3c4d5e6f7a8b9c0d/contrato"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer tok")
+        );
+        assert!(request.body().is_none(), "el GET de contrato no lleva body");
+    }
+
+    #[test]
+    fn nombre_archivo_contrato_usa_el_filename_del_header() {
+        assert_eq!(
+            nombre_archivo_contrato(
+                Some("attachment; filename=\"contrato-GACM940101HDFRRR07.pdf\""),
+                "GACM940101HDFRRR07"
+            ),
+            "contrato-GACM940101HDFRRR07.pdf"
+        );
+        // filename sin comillas también parsea
+        assert_eq!(
+            nombre_archivo_contrato(Some("attachment; filename=contrato.pdf"), "X"),
+            "contrato.pdf"
+        );
+    }
+
+    #[test]
+    fn nombre_archivo_contrato_sin_header_o_sin_filename_cae_a_curp() {
+        assert_eq!(
+            nombre_archivo_contrato(None, "GACM940101HDFRRR07"),
+            "contrato-GACM940101HDFRRR07.pdf"
+        );
+        assert_eq!(
+            nombre_archivo_contrato(Some("attachment"), "GACM940101HDFRRR07"),
+            "contrato-GACM940101HDFRRR07.pdf"
+        );
+        assert_eq!(
+            nombre_archivo_contrato(Some("attachment; filename=\"\""), "X"),
+            "contrato-X.pdf",
+            "filename vacío cuenta como ausente"
+        );
+    }
+
+    #[test]
+    fn js_descarga_embebe_base64_y_nombre_escapado() {
+        let js = js_descarga("QUJD", "contrato-X.pdf");
+        assert!(js.contains("atob('QUJD')"), "los bytes van embebidos");
+        assert!(js.contains("application/pdf"));
+        assert!(js.contains("\"contrato-X.pdf\""), "nombre como string JSON");
+        assert!(js.contains("a.download"));
+        assert!(js.contains("URL.revokeObjectURL"), "limpia el object URL");
     }
 }

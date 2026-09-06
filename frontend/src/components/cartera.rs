@@ -3,7 +3,10 @@
 
 use dioxus::prelude::*;
 
-use crate::api::{authed_request, registrar_pago, sesion_ok, siguiente_cuota_impaga};
+use crate::api::{
+    authed_request, descargar_archivo, descargar_contrato, registrar_pago, sesion_ok,
+    siguiente_cuota_impaga,
+};
 
 /// Descarga la lista de planes del tenant (al montar y tras cada pago).
 async fn cargar_planes(
@@ -40,6 +43,11 @@ pub fn Cartera(token: Signal<String>, is_authenticated: Signal<bool>) -> Element
     let pago_monto = use_signal(|| String::new());
     let pago_error = use_signal(|| String::new());
     let pago_enviando = use_signal(|| false);
+
+    // Descarga de contrato: el plan que está descargando (uno a la vez) y el
+    // último error (visible bajo la tabla). Se escriben dentro de FilaPlan.
+    let descargando = use_signal(|| Option::<String>::None);
+    let descarga_error = use_signal(|| String::new());
 
     // Se monta/desmonta al navegar por el menú: refetchea la cartera en cada visita.
     if !cartera_loaded() {
@@ -92,10 +100,15 @@ pub fn Cartera(token: Signal<String>, is_authenticated: Signal<bool>) -> Element
                                     pago_monto,
                                     pago_error,
                                     pago_enviando,
+                                    descargando,
+                                    descarga_error,
                                 }
                             }
                         }
                     }
+                }
+                if !descarga_error().is_empty() {
+                    div { class: "mt-3 text-sm text-red-600 dark:text-red-400", "{descarga_error}" }
                 }
             }
         }
@@ -118,8 +131,13 @@ fn FilaPlan(
     mut pago_monto: Signal<String>,
     mut pago_error: Signal<String>,
     mut pago_enviando: Signal<bool>,
+    mut descargando: Signal<Option<String>>,
+    mut descarga_error: Signal<String>,
 ) -> Element {
     let id = plan["_id"].as_str().unwrap_or("").to_string();
+    // Clon para el botón de descarga: el closure de "Registrar pago" mueve `id`.
+    let id_descarga = id.clone();
+    let curp = plan["cliente_curp"].as_str().unwrap_or("").to_string();
     let estado = plan["estado"].as_str().unwrap_or("—").to_string();
     let badge = match estado.as_str() {
         "Activo" => "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-400",
@@ -152,18 +170,53 @@ fn FilaPlan(
                 }
             }
             td { class: "py-3 px-4",
-                if estado == "Liquidado" || siguiente.is_none() {
-                    span { class: "text-xs text-slate-300 dark:text-slate-600", "—" }
-                } else {
+                div { class: "flex flex-col items-start gap-1.5",
+                    if estado == "Liquidado" || siguiente.is_none() {
+                        span { class: "text-xs text-slate-300 dark:text-slate-600", "—" }
+                    } else {
+                        button {
+                            class: "bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg",
+                            onclick: move |_| {
+                                pago_plan.set(Some(id.clone()));
+                                pago_monto.set(if pago_mensual > 0.0 { format!("{pago_mensual}") } else { String::new() });
+                                pago_cuota.set(siguiente.map(|c| c.to_string()).unwrap_or_default());
+                                pago_error.set(String::new());
+                            },
+                            "Registrar pago"
+                        }
+                    }
+                    // Contrato PDF (ola 6): disponible para todo plan del tenant,
+                    // incluso liquidado (el contrato sigue siendo histórico válido).
                     button {
-                        class: "bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg",
+                        class: "bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-lg dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-white",
+                        disabled: descargando().as_deref() == Some(id_descarga.as_str()),
                         onclick: move |_| {
-                            pago_plan.set(Some(id.clone()));
-                            pago_monto.set(if pago_mensual > 0.0 { format!("{pago_mensual}") } else { String::new() });
-                            pago_cuota.set(siguiente.map(|c| c.to_string()).unwrap_or_default());
-                            pago_error.set(String::new());
+                            let token_val = token();
+                            let plan_id = id_descarga.clone();
+                            let curp_val = curp.clone();
+                            descargando.set(Some(plan_id.clone()));
+                            descarga_error.set(String::new());
+                            spawn(async move {
+                                match descargar_contrato(
+                                    &plan_id,
+                                    &curp_val,
+                                    &token_val,
+                                    is_authenticated,
+                                    token,
+                                )
+                                .await
+                                {
+                                    Ok((bytes, nombre)) => descargar_archivo(&bytes, &nombre),
+                                    Err(e) => descarga_error.set(e),
+                                }
+                                descargando.set(None);
+                            });
                         },
-                        "Registrar pago"
+                        if descargando().as_deref() == Some(id_descarga.as_str()) {
+                            "Descargando…"
+                        } else {
+                            "Descargar contrato"
+                        }
                     }
                 }
             }
