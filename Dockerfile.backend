@@ -14,8 +14,10 @@ COPY backend/src backend/src
 RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime
+# tesseract (motor OCR, ola 5) con idioma español en la imagen de runtime:
+# el binario del backend lo invoca como proceso hijo (kyc/recibos).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 tesseract-ocr tesseract-ocr-spa \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home app
 WORKDIR /app

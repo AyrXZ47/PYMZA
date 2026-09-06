@@ -30,6 +30,39 @@ con claims `sub=<correo>`, `nombre=<nombre_empresa>` y `exp` (timestamp unix).
 - Datos previos al aislamiento multi-tenant (empresa = nombre comercial) se
   migran con `backend/scripts/migrate_tenant.js` (idempotente).
 
+## CORS (ola 6)
+
+Los orígenes permitidos se toman de la env **`ALLOWED_ORIGINS`** (separada por
+comas): en producción va el dominio público del frontend. Si la env falta o
+queda vacía, se usan los de dev — `http://localhost:8080,
+http://127.0.0.1:8080` — sin cambio de comportamiento local. Métodos: `GET` /
+`POST`; headers: `*`. Un origen con caracteres inválidos para un header se
+descarta, no rompe el arranque.
+
+## Rate limit — rutas públicas (ola 6)
+
+`POST /api/login` y `POST /api/empresas` tienen un límite por IP
+(`tower-governor`): **10 peticiones por segundo con ráfaga de 20** (defaults),
+configurable por env `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (una env vacía,
+inválida o `0` usa el default). Las rutas protegidas NO lo tienen: la sesión
+JWT ya las blinda contra el brute-force.
+
+Al exceder el límite, la misma IP recibe `429` con el JSON del contrato:
+
+```json
+{ "status": "error", "message": "Demasiadas peticiones, intenta más tarde" }
+```
+
+y el header `x-ratelimit-after: <segundos>` indica cuándo vuelve a haber permiso.
+
+## Límite de tamaño de body (ola 6)
+
+El backend acepta requests de hasta **3 MB** (`DefaultBodyLimit` global — antes
+2 MB). Es una red de seguridad: el b64 de una imagen de ≤2 MB (~2.7 MB en base64)
+llega a los handlers de KYC/recibos, que son quienes rechazan los archivos
+demasiado grandes con un `400` y el mensaje del contrato ("El archivo excede el
+máximo de 2 MB") — ya no un `413` crudo del framework.
+
 ---
 
 ## POST `/api/login` — pública
@@ -552,6 +585,45 @@ calculado en servidor — `cuotas_pagadas` (pagos registrados del plan) y
 campos se calculan, no se persisten.
 
 **Colección Mongo:** `planes_pago` y `pagos` (leídos por `empresa` para calcular el avance).
+
+---
+
+## GET `/api/creditos/:plan_id/contrato` — protegida
+
+Ola 6 — genera y descarga el **PDF del contrato de crédito** del plan. Se
+regenera bajo demanda desde datos vivos (nunca se almacena). Contenido: título
+"CONTRATO DE CRÉDITO", fecha de emisión, datos de la empresa (nombre, correo),
+del cliente (nombre, CURP), datos del crédito (producto, monto, plazo, tasa,
+pago mensual), la **tabla completa de pagos** (mes, pago, interés, capital,
+saldo — misma fórmula de `evaluar`), línea de firma y leyenda.
+
+**Requiere:** `Authorization: Bearer <token>` — solo planes del tenant del
+token; el plan ajeno no aparece con el filtro por empresa.
+
+**Parámetro de ruta:** `:plan_id` — hex del ObjectId del plan (lo expone
+`GET /api/creditos`).
+
+**Respuesta (éxito):** archivo válido
+- `Content-Type: application/pdf`
+- `Content-Disposition: attachment; filename="contrato-<curp>.pdf"`
+- body: bytes del PDF (header `%PDF-`, formato 1.3, A4)
+
+**Respuestas (error):**
+- `400` — `plan_id` no es un ObjectId hex:
+  ```json
+  { "status": "error", "message": "plan_id inválido: se espera el hex del ObjectId" }
+  ```
+- `404` — plan inexistente o de otra empresa:
+  ```json
+  { "status": "error", "message": "Plan no encontrado" }
+  ```
+- `401` sin token — igual que todas las protegidas.
+
+Si el cliente ya no existe en la red, el CURP hace de nombre en el PDF
+(patrones de la ola 4); si la empresa no está, el correo.
+
+**Colecciones Mongo:** `planes_pago` (lee por `_id` + `empresa`), `empresas` y
+`clientes` (solo lectura, para los nombres del PDF).
 
 ---
 
