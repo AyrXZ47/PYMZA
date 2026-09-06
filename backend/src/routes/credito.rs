@@ -1,19 +1,23 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::State,
-    http::StatusCode,
+    body::Body,
+    extract::{Path, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::{Datelike, Months, NaiveDate, Utc};
 use futures::StreamExt;
-use mongodb::bson::doc;
+use mongodb::bson::{doc, oid::ObjectId};
 
 use crate::auth::EmpresaSession;
 use crate::models::cliente::Cliente;
 use crate::models::credito::{
     AutorizarReq, DashboardStats, EvaluarReq, EvaluarRes, Pago, PagoInfo, PlanPago, RegistrarPagoReq,
 };
+use crate::models::empresa::Empresa;
+use crate::pdf::pdf_contrato;
 
 fn tasa_por_plazo(meses: i32) -> f64 {
     match meses {
@@ -25,7 +29,8 @@ fn tasa_por_plazo(meses: i32) -> f64 {
     }
 }
 
-fn generar_plan_pagos(monto: f64, plazo_meses: i32, tasa: f64) -> Vec<PagoInfo> {
+// pub(crate): la tabla del contrato PDF se regenera con la MISMA fórmula.
+pub(crate) fn generar_plan_pagos(monto: f64, plazo_meses: i32, tasa: f64) -> Vec<PagoInfo> {
     let total_interes = monto * tasa;
     let total_pagar = monto + total_interes;
     let pago_mensual = total_pagar / plazo_meses as f64;
@@ -652,6 +657,82 @@ pub async fn obtener_dashboard(
         })),
         Err(_) => Json(serde_json::json!({"status": "error"})),
     }
+}
+
+/// GET /api/creditos/:plan_id/contrato (ola 6): genera y devuelve el PDF del
+/// contrato del plan. Validaciones: plan_id hex → 400; existe y es del tenant
+/// del token → si no, 404 (el plan ajeno ni aparece con el filtro de empresa,
+/// mismo 404 único que registrar_pago). El PDF se regenera bajo demanda, nunca
+/// se almacena.
+pub async fn descargar_contrato(
+    State(client): State<mongodb::Client>,
+    sesion: EmpresaSession,
+    Path(plan_id): Path<String>,
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+    let error_db = |e: mongodb::error::Error| {
+        eprintln!("🚨 ERROR MONGODB (contrato): {e:?}");
+        error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error interno")
+    };
+
+    let Ok(oid) = ObjectId::parse_str(&plan_id) else {
+        return Err(error_status(
+            StatusCode::BAD_REQUEST,
+            "plan_id inválido: se espera el hex del ObjectId",
+        ));
+    };
+    let db = client.database("pymza");
+    let plan = db
+        .collection::<PlanPago>("planes_pago")
+        .find_one(doc! { "_id": oid, "empresa": &sesion.correo }, None)
+        .await
+        .map_err(error_db)?
+        .ok_or_else(|| error_status(StatusCode::NOT_FOUND, "Plan no encontrado"))?;
+
+    // Nombre de la empresa (para el PDF); si el registro no está, el correo
+    // hace de nombre — el contrato sigue legible y no se rompe por cosmética.
+    let empresa = db
+        .collection::<Empresa>("empresas")
+        .find_one(doc! { "correo": &sesion.correo }, None)
+        .await
+        .map_err(error_db)?;
+    let nombre_empresa = empresa
+        .map(|e| e.nombre_empresa)
+        .unwrap_or_else(|| sesion.correo.clone());
+
+    // Nombre del cliente; si ya no existe en la red, el CURP hace de nombre
+    // (patrón de resumen_cartera).
+    let cliente = db
+        .collection::<Cliente>("clientes")
+        .find_one(doc! { "curp": &plan.cliente_curp }, None)
+        .await
+        .map_err(error_db)?;
+    let nombre_cliente = cliente
+        .map(|c| c.nombre_completo)
+        .unwrap_or_else(|| plan.cliente_curp.clone());
+
+    let pdf = pdf_contrato(
+        &nombre_empresa,
+        &sesion.correo,
+        &nombre_cliente,
+        &plan.cliente_curp,
+        &plan,
+        &Utc::now().format("%Y-%m-%d").to_string(),
+    );
+
+    let mut res = Response::new(Body::from(pdf));
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    // El CURP es ascii; si el curp guardado trae basura, filename genérico.
+    let disposition = HeaderValue::from_str(&format!(
+        "attachment; filename=\"contrato-{}.pdf\"",
+        plan.cliente_curp
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("attachment; filename=\"contrato.pdf\""));
+    res.headers_mut().insert(header::CONTENT_DISPOSITION, disposition);
+    // axum::Response es http::Response<UnsyncBoxBody>: IntoResponse hace el boxing.
+    Ok(res.into_response())
 }
 
 #[cfg(test)]

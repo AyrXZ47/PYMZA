@@ -3,6 +3,7 @@ mod db;
 mod models;
 mod ocr;
 mod otp;
+mod pdf;
 mod routes;
 
 use std::net::SocketAddr;
@@ -20,8 +21,8 @@ use tower_governor::{errors::GovernorError, governor::GovernorConfigBuilder, Gov
 use auth::{cors_layer, jwt_secret, login_empresa, EmpresaSession};
 use routes::cliente::{buscar_cliente, crear_cliente, reportar_cliente};
 use routes::credito::{
-    autorizar_credito, evaluar_credito, obtener_creditos, obtener_dashboard, obtener_resumen,
-    registrar_pago,
+    autorizar_credito, descargar_contrato, evaluar_credito, obtener_creditos, obtener_dashboard,
+    obtener_resumen, registrar_pago,
 };
 use routes::empresa::alta_empresa;
 use routes::kyc::{kyc_verificar_ine, recibo_subir};
@@ -137,6 +138,7 @@ async fn main() {
         .route("/api/creditos/evaluar", post(evaluar_credito))
         .route("/api/creditos/autorizar", post(autorizar_credito))
         .route("/api/creditos/pagos", post(registrar_pago))
+        .route("/api/creditos/:plan_id/contrato", get(descargar_contrato))
         .route("/api/creditos", get(obtener_creditos))
         .route("/api/creditos/resumen", get(obtener_resumen))
         .route("/api/dashboard", get(obtener_dashboard))
