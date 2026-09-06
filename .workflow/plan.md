@@ -44,7 +44,7 @@ Constraints:
 | 3 | Identidad verificable: CURP dv, correo, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 |
 | 4 | Cartera viva: pagos + estados de plan + gráficas SVG + favicon | [x] auditada 2026-09-04 |
 | 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
-| 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] planificada (EN CURSO) |
+| 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] integrada 2026-09-06 (merges + cargo build/test OK, push main) — humo Docker PENDIENTE (socket docker requiere reinicio para aplicar grupo) |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
