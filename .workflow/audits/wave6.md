@@ -108,4 +108,36 @@ El botón "Descargar contrato" usa 4 clases que faltan en `frontend/assets/tailw
 4. **Re-auditoría puntual** (auditor): `cargo test`, los 3 payloads de F1/F2 → 400, `docker compose build` OK + tesseract en imagen. No hace falta repetir el resto del gate.
 5. F3–F8 + hardening: quedan en el ledger (olas 7+); F3/F4/F5/F6 con fixes baratos si V quiere subir el listón pre-despliegue.
 
-Pendiente que NO bloquea (owners): humo UI en navegador (V, al probar Railway); F4 requiere testing en Railway (bucket global del rate limiter); `mongo:latest` del compose para local (V: fijar versión).
+---
+
+## Re-auditoría 2026-09-06 — ola 6-fix
+
+- **Fecha:** 2026-09-06 (sesión de auditoría en fresco; árbol integrado `main` @ `12ea9b2`, `git status` limpio)
+- **Alcance puntual:** solo cierra F1/F2 (HIGH), S1, S2 y T4/F5 (aprobado por V). NO repite el gate completo de la ola 6.
+- **Commits auditados (diff `4c6f0e9..main`):** `a32b096` (F1/F2: `credito.rs`), `ab551d0` (S1: `Dockerfile.backend`), `31487bb` (T4/F5: `db.rs`), `6101aa1`/`c5a2877`/`12ea9b2` (docs plan/brief).
+- **Veredicto: APPROVED WITH EXCEPTIONS** — F1/F2/S1/S2/T4 cerrados y verificados en vivo; una excepción LOW documentada abajo (preexistente, fuera del scope del fix).
+
+### Checks (comando → salida)
+
+1. **Backend build+test:** `cd backend && cargo build && cargo test` → `Finished dev profile` → `test result: ok. 73 passed; 0 failed; 0 ignored` (68 previos + 5 nuevos de F1/F2: tests inline `evaluar_rechaza_plazo_gigante_con_400`, `evaluar_rechaza_monto_negativo_con_400`, `autorizar_rechaza_plazo_gigante_con_400`, `autorizar_rechaza_monto_negativo_con_400`, `validar_plazo_y_monto` bordes 3..=12, log en `/tmp/opencode/backend-test.log`).
+2. **Frontend check+test (wasm):** `cd frontend && cargo check --target wasm32-unknown-unknown && cargo test` → `Finished` (wasm) → `test result: ok. 40 passed; 0 failed`.
+3. **Payloads del contrato en vivo** (mongod local `--dbpath /tmp/opencode/mongo-data`, seed fresco, `cargo build` de `main`, backend en `BIND_ADDR=127.0.0.1:3100` porque el :3000 del host estaba ocupado por un proceso preexistente):
+   - `POST /api/login` demo@pymza.mx/demo1234 → token (181 chars). ✅
+   - **F1.1** `evaluar` `{"monto":10000,"plazo_meses":1000000,...}` → `{"status":"error","message":"El plazo debe estar entre 3 y 12 meses"}` **HTTP 400** (proceso vivo; sin OOM). ✅
+   - **F1.2** `evaluar` `{"monto":-1,"plazo_meses":6,...}` → `{"status":"error","message":"El monto debe ser mayor a 0"}` **HTTP 400**. ✅
+   - **F2** `autorizar` plan envenenado `plazo_meses:1000000` → **HTTP 400** "El plazo debe estar entre 3 y 12 meses"; `db.planes_pago.countDocuments()` **antes=1, después=1** (el plan del seed; NADA se insertó). ✅
+   - **T4/F5.1** `db.empresas.getIndexes()` → `{ key: { correo: 1 }, name: 'correo_1', unique: true }` — índice único creado por el backend al arrancar. ✅
+   - **T4/F5.2** POST `/api/empresas` correo duplicado (demo y también una creada durante la prueba) → `{"status":"error","message":"Ya existe una empresa registrada con ese correo"}`, mensaje claro; `db.empresas` sin duplicados (2 docs: demo + 1 nueva creada en la prueba). ✅
+4. **Docker (S1):** `docker compose build` → `Image pymza-backend Built`, `Image pymza-frontend Built` (ambos, sin errores). El log muestra el fix activo: `[backend builder] FROM ... rust:1.97-bookworm`, `COPY backend/Cargo.toml ./Cargo.toml`, `COPY backend/src ./src` (las 3 recetas de la auditoría ola 6). `docker run --rm pymza-backend tesseract --version` → `tesseract 5.3.0`; `spa.traineddata` presente; imagen corre como usuario no-root `app` (uid 10001). ✅
+5. **CSS (S2 — falso positivo del grep, confirmado):** `grep -c "hover:bg-blue-700\|..." frontend/assets/tailwind.css` → **0** con patrón literal. Las 4 clases SÍ están en el CSS: Tailwind v4 escapa los selectores; con el patrón correcto (escapado) matches 1 por clase: `hover\:bg-blue-700 ×1`, `py-1\.5 ×1`, `hover\:bg-slate-300 ×1`, `dark\:bg-slate-700 ×1`. El código fuente sigue usándolas (cartera.rs:178,191 — exactamente esas 4). **S2 cerrado sin commit de CSS** (regeneración byte-idéntica, hash `15cdb136` según T3 del plan — consistente con mi grep: nada cambió). ✅
+6. **Diff del fix vs mapa:** `git diff 4c6f0e9..main --stat` → 5 archivos: `backend/src/routes/credito.rs` (+123/−12), `Dockerfile.backend` (+8/−3), `backend/src/db.rs` (+23), `.workflow/plan.md` y `.workflow/briefs/wave6fix-executor-1.md` (docs — permitidos). 100% dentro del mapa de la 6-fix. `backend/Cargo.toml`/`frontend/Cargo.toml` sin cambios → **cero deps nuevas**. Los fixes llevan `ponytail:` comments (Dockerfile: techo del tag rust; db.rs: falla blanda idempotente con reintento al arranque). ✅
+
+### Excepciones (LOW, no bloquea la ola)
+
+| ID | Hallazgo | Severidad | Owner |
+|---|---|---|---|
+| A6-1 | `POST /api/empresas` con correo duplicado responde **HTTP 200** con `{"status":"error",...}` (no 4xx). Es el contrato documentado Y preexistente del endpoint (docs/API.md §`/api/empresas` — errores por body); no es introducido por el fix. El objetivo de T4/F5 queda cerrado: índice único en DB + mensaje claro + sin_dupes → la carrera ya no comparte tenant key. Códigos HTTP coherentes (409/422) → olas 7+ junto con F7. | LOW | V (ola 7) |
+
+### Cierre release gate
+
+F1/F2 (los únicos HIGH del security-audit) quedan CORREGIDOS y verificados en vivo. S1 (bloqueante de despliegue) construye ambas imágenes y la imagen backend tiene tesseract 5.3.0+spa+usuario no-root. S2 era falso positivo (grep sin escapar selectores de Tailwind v4). T4/F5(aprobado por V) cerrado con índice único. El resto del security-audit sigue en verde (ola 6, §3) y lo pendiente (F3, F4, F6, F7, F8) queda en el ledger para olas 7+. **V puede desplegar siguiendo `docs/DEPLOY.md`.**
