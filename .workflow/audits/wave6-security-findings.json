@@ -1,0 +1,541 @@
+[
+  {
+    "verdict": "confirmed",
+    "title": "DoS total del backend con un solo request: plazo_meses sin tope en evaluar reserva ~86 GB (OOM del proceso)",
+    "description": "POST /api/creditos/evaluar acepta plazo_meses:i32 sin validar rango. generar_plan_pagos hace (1..=plazo_meses).map(..).collect() sobre un RangeInclusive (ExactSizeIterator): con plazo_meses=2147483647 reserva 2^31-1 * 40B ≈ 86 GB (PagoInfo: i32 + 4×f64, 40 B padded). Confirmado dinámicamente contra el backend local (1 request): RSS del proceso creció de 20 GB a 30 GB en 12 s (medido con ps cada 2 s) y siguió escalando hacia el OOM; el proceso fue terminado manualmente para preservar el entorno. Con el OOM-killer el backend muere (SIGKILL) o aborta (SIGABRT): TODOS los tenants caen. El registro de empresas es público (POST /api/empresas), así que el atacante solo necesita auto-registrarse + 1 request.",
+    "root_cause": "generar_plan_pagos in backend/src/routes/credito.rs does not bound plazo_meses to the documented 3..=12 product range, allowing a user-supplied i32 to drive a collect() that allocates ~86 GB and kills the process.",
+    "intended_behavior": "evaluar_credito construye la tabla de pagos del plan (mes, pago, interés, capital, saldo) con plazos de producto 3, 6, 9 o 12 meses, según se documenta en docs/API.md; cualquier plazo fuera de ese rango debe devolverse 400 sin tocar la memoria.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 138,
+        "scope": "main",
+        "description": "Route POST /api/creditos/evaluar (protected by EmpresaSession only, no body validation layer)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/credito.rs",
+        "line": 463,
+        "scope": "evaluar_credito",
+        "description": "Body deserialize into EvaluarReq{monto: f64, plazo_meses: i32} with no range check on plazo_meses; value passed through to generar_plan_pagos."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/routes/credito.rs",
+        "line": 33,
+        "scope": "generar_plan_pagos",
+        "description": "(1..=plazo_meses).map(..).collect::<Vec<PagoInfo>>() — ExactSizeIterator drives a single ~103 GB reservation; allocation grows pages until OOM/abort."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Requires a valid JWT of any empresa; empresas self-register via the public POST /api/empresas endpoint."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "An attacker (or any tenant) registers an account, logs in, and sends ONE request with plazo_meses=2147483647. The backend process consumes all host RAM within ~30 s and dies; every tenant of the deployment goes down. Repeated at will because the attack leaves no state.",
+      "payloads": [
+        "POST /api/creditos/evaluar {\"curp\":\"RAMJ920215MDFMZR05\",\"monto\":1000.0,\"plazo_meses\":2147483647}"
+      ],
+      "instructions": [
+        "1) POST /api/empresas to create an account (public). 2) POST /api/login to get the JWT. 3) Send the evaluar payload above. 4) Watch RSS of the backend process grow ~2 GB every 2 s until OOM-killer kills it."
+      ],
+      "expected_result": "Backend process terminated by OOM (or malloc failure -> abort). Observed: RSS 20.4 GB -> 30.5 GB in 12 s (audit evidence), process still climbing when killed manually."
+    },
+    "remediation": {
+      "strategy": "Validate plazo_meses (3..=12) and monto (finite, > 0) in evaluar_credito AND autorizar_credito at the handler boundary; return 400 for anything else. Two if-statements; closes F1, F2 and removes the OOM path of the PDF generator as a side effect."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced live against the integrated tree: one request grew backend RSS from 20 GB to 30 GB (measured with ps) before the auditor killed the process to protect the environment."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "autorizar_credito persiste plazo_meses sin validar: cartera/resumen congelados, dashboard con datos stale y contrato-PDF como OOM persistente",
+    "description": "POST /api/creditos/autorizar inserta el plan con los campos del body sin ninguna validación (los f64 no-finitos son imposibles por JSON — el extractor rechaza NaN/Infinity/1e400 con 400, probado—, pero plazo_meses:i32 entra sin rango y valores finitos enormes (1e308) pasan). Un plan con plazo_meses=2147483647 queda PERSISTIDO en planes_pago (no existe endpoint de borrado; plazo inmutable vía API) y envenena tres sinks: (1) obtener_creditos itera 1..=plazo_meses completo vía cuotas_vencidas (credito.rs:78, llamada en :545) y resumen_cartera itera dos veces (líneas 291, 330) — confirmado en vivo: GET /api/creditos colgado (timeout 6 s) con el backend al 66% CPU; (2) el propio autorizar se cuelga en el upsert de dashboard_stats vía cuotas_por_vencer (credito.rs:522-524 → 179-183; el insert (:508) comete el veneno ANTES de colgar) — el dashboard queda con stats stale permanentes; (3) descargar_contrato llama generar_plan_pagos con el plazo envenenado → mismo OOM de F1 (~86 GB), ahora persistido en DB.",
+    "root_cause": "autorizar_credito in backend/src/routes/credito.rs does not validate plazo_meses (i32, unbounded) before inserting PlanPago, allowing an unbounded persisted value to drive unbounded iteration in every read path of the tenant and an unbounded allocation in the contract PDF generator.",
+    "intended_behavior": "autorizar_credito persiste planes validados por evaluar (plazo 3..=12, montos finitos positivos); docs/API.md documenta el flujo evaluar→autorizar con plazos 3/6/9/12 meses, pero nada se revalida server-side.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 139,
+        "scope": "main",
+        "description": "Route POST /api/creditos/autorizar (EmpresaSession only)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/credito.rs",
+        "line": 488,
+        "scope": "autorizar_credito",
+        "description": "PlanPago built directly from body fields (cliente_curp, monto_total, plazo_meses i32, pago_mensual f64, tasa_interes f64) with no range/finiteness validation; inserted into planes_pago."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/credito.rs",
+        "line": 66,
+        "scope": "estado_plan",
+        "description": "Read paths iterate 1..=plan.plazo_meses parsing a NaiveDate per cuota: with plazo=2^31-1 the loop runs minutes of blocking CPU per request (confirmed: GET /api/creditos timeout, 66% CPU)."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/pdf.rs",
+        "line": 54,
+        "scope": "pdf_contrato",
+        "description": "GET /api/creditos/:plan_id/contrato regenerates the table with generar_plan_pagos(plan.monto_total, plan.plazo_meses, ..) -> same unbounded collect() as F1 (OOM), now from persisted poisoned state."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Requires a valid JWT of the tenant whose plan is poisoned; self-registration is public, so any attacker can become a tenant."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Any tenant sends one autorizar with plazo_meses=2147483647 (the request hangs, but the plan is persisted). From then on the tenant's cartera/resumen/dashboard/payments endpoints hang forever (blocking shared tokio workers), and GET .../contrato on that plan_id OOMs the process. One poisoned plan degrades the whole deployment.",
+      "payloads": [
+        "POST /api/creditos/autorizar {\"cliente_curp\":\"RAMJ920215MDFMZR05\",\"producto\":\"x\",\"monto_total\":100.0,\"plazo_meses\":2147483647,\"pago_mensual\":1.0,\"tasa_interes\":0.0}"
+      ],
+      "instructions": [
+        "1) Get a JWT (login or self-register). 2) Send the autorizar payload above (it will not return — the plan IS inserted, verified in planes_pago). 3) Restart/reconnect and GET /api/creditos with the tenant's JWT: the request hangs; the backend burns ~66% of a core indefinitely."
+      ],
+      "expected_result": "Plan persisted with plazo_meses=2147483647 (verified via mongosh); subsequent GET /api/creditos times out while the process burns a worker thread per request."
+    },
+    "remediation": {
+      "strategy": "Same fix as F1: validate plazo_meses (3..=12) and finite positive amounts in autorizar_credito before insert (400 otherwise). For already-poisoned production data, document a cleanup script (delete or clamp offending plans) — no delete endpoint exists by design."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced live: plan persisted in planes_pago with plazo_meses=2147483647 (mongosh evidence); GET /api/creditos hung past a 6 s timeout with the process at 66% CPU on one worker."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "telefono_verificado falsificable: el OTP nunca compara el teléfono verificado con el teléfono del cliente",
+    "description": "El flujo OTP (POST /api/verificaciones/solicitar + /confirmar) nunca relaciona el teléfono del body con clientes.telefono. Una empresa autenticada solicita el OTP para la curp de CUALQUIER cliente de la red con SU PROPIO teléfono (mock o WhatsApp), recibe el código, lo confirma, y el cliente queda telefono_verificado=true aunque su teléfono real nunca fue tocado. Confirmado en vivo: cliente RAMJ920215MDFMZR05 (teléfono real 5551234567 según seed) quedó telefono_verificado:true tras un OTP enviado a 5550000001 (teléfono controlado por el auditor). Además solicitar no comprueba que el cliente exista (el desafío se crea para curps inexistentes) y confirmar no consume el desafío en error (sin límite de intentos), y el hash es SHA-256 sin salt de un dominio de 6 dígitos (10^6: fuerza bruta offline instantánea si la colección se filtra).",
+    "root_cause": "confirmar_verificacion in backend/src/routes/verificacion.rs does not compare the verified telefono against clientes.telefono before marking telefono_verificado=true, allowing an authenticated empresa to verify an arbitrary phone for any CURP of the shared network.",
+    "intended_behavior": "El OTP verifica que el TELÉFONO GUARDADO DEL CLIENTE es alcanzable: la empresa pide el código para curp+telefono del cliente, el cliente lo recibe y lo comparte; solo entonces el cliente queda marcado verificado.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 145,
+        "scope": "main",
+        "description": "Routes POST /api/verificaciones/solicitar and /confirmar (EmpresaSession only)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/verificacion.rs",
+        "line": 32,
+        "scope": "solicitar_verificacion",
+        "description": "Creates the challenge keyed by (curp, telefono) from the BODY; neither the client's existence nor that telefono == clientes.telefono is checked; the code goes to whatever phone the empresa supplies."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/routes/verificacion.rs",
+        "line": 114,
+        "scope": "confirmar_verificacion",
+        "description": "update_one filters clientes by curp ONLY and sets telefono_verificado=true; the phone that received the code is never compared with clientes.telefono."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Requires a valid JWT of any empresa (self-registration is public)."
+      },
+      {
+        "kind": "third_party_dependency",
+        "description": "With WHATSAPP_* envs unset the OTP falls back to MockOtpSender (code printed in server logs) — the bypass does not even need a real phone; with WhatsApp configured the code goes to any number the empresa controls."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Empresa A wants the 'verified phone' badge (shared network signal used as KYC evidence) on a client of empresa B, or on a client of A with a phone A controls: 2 requests, no contact with the client, cross-tenant. The badge's integrity — the whole point of the feature — is defeated.",
+      "payloads": [
+        "POST /api/verificaciones/solicitar {\"curp\":\"RAMJ920215MDFMZR05\",\"telefono\":\"5550000001\"}  → read code from mock log (062850 in audit evidence) → POST /api/verificaciones/confirmar {\"curp\":\"RAMJ920215MDFMZR05\",\"telefono\":\"5550000001\",\"codigo\":\"062850\"}"
+      ],
+      "instructions": [
+        "1) Login as any empresa. 2) solicitar with the victim's curp and your own phone (mock mode prints the code in the backend log). 3) confirmar with that code. 4) GET /api/clientes/<curp> shows telefono_verificado:true while the stored phone (5551234567) never received anything."
+      ],
+      "expected_result": "{\"status\":\"success\",\"telefono_verificado\":true} — observed; GET cliente confirms telefono 5551234567 with telefono_verificado true."
+    },
+    "remediation": {
+      "strategy": "In solicitar_verificacion, look up the client and require (and store) clientes.telefono — reject mismatches with 400. In confirmar_verificacion, keep the (curp,telefono) match but only mark verified when telefono == clientes.telefono. Cheap: one lookup + one comparison. Secondary hardening: limit failed confirm attempts per challenge and delete the challenge on the first wrong code."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "medium",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "medium"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Reproduced end-to-end against the integrated tree: cliente with stored phone 5551234567 ended telefono_verificado=true after an OTP sent to 5550000001 (mock code read from the backend log)."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "Rate limiter por peer-addr: detrás del proxy de Railway el bucket es global (un cliente puede 429-ear el login de todos)",
+    "description": "El GovernorConfigBuilder no usa use_headers(): tower_governor toma la IP del socket (ConnectInfo). En local/directo es correcto y SIN bypass (probado: X-Forwarded-For aleatorios no restauran el bucket). Pero en Railway el tráfico llega por el proxy: TODAS las conexiones comparten la misma peer-addr → el bucket 10 rps/20 burst es GLOBAL para toda la plataforma. Cualquier atacante (o una ráfaga legítima de usuarios concurrentes) puede mantener POST /api/login y POST /api/empresas en 429 para todos. Es un problema de disponibilidad que SOLO se manifiesta en producción (requires deployment testing: no puede confirmarse sin Railway). La alternativa ingenua (use_headers XFF) introduce spoofing; el fix correcto es confiar en X-Forwarded-For solo para conexiones del CIDR del proxy.",
+    "root_cause": "main in backend/src/main.rs does not configure a proxy-aware key extractor for GovernorLayer (default PeerIpKeyExtractor reads ConnectInfo; .key_extractor(SmartIpKeyExtractor) or a trusted-proxy allowlist is absent), allowing the proxy's shared peer address to collapse all tenants into one global rate-limit bucket in production.",
+    "intended_behavior": "El límite por IP debe medir al CLIENTE REAL detrás del proxy de Railway (o al menos repartir el bucket por conexión diferenciada), sin abrir un bypass spoofable de XFF.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 105,
+        "scope": "main",
+        "description": "GovernorConfigBuilder::default().per_second(rps).burst_size(burst) — no use_headers(); peer-addr keyed buckets."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/main.rs",
+        "line": 120,
+        "scope": "main",
+        "description": "GovernorLayer applied to POST /api/login and POST /api/empresas; app served via into_make_service_with_connect_info::<SocketAddr>() — socket peer address is the bucket key."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/main.rs",
+        "line": 165,
+        "scope": "main",
+        "description": "Behind Railway's HTTP proxy every incoming connection presents the proxy's address: one shared bucket for all users; >20 concurrent login requests in a second (or a single attacker) trip 429 for everyone."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "network_routing",
+        "description": "Only manifests behind a shared reverse proxy (Railway). Locally verified safe: spoofed X-Forwarded-For does NOT reset the bucket (no bypass)."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "An unauthenticated attacker sends 21 requests to /api/login in one second (within the global burst) from behind Railway's proxy: every other user attempting login during the window gets 429. Sustained at 10 rps it keeps the whole platform's login dark. Effort: trivial; impact: availability of auth for all tenants.",
+      "payloads": [
+        "for i in 1..25: curl -X POST https://<railway-backend>/api/login -d '{\"correo\":\"x@y.z\",\"password\":\"no\"}'"
+      ],
+      "instructions": [
+        "Deploy per docs/DEPLOY.md, then send 21+ rapid logins; observe 429 for unrelated clients. Requires deployment testing (Railway) to confirm the peer-addr collapse — cannot be confirmed from source alone."
+      ],
+      "expected_result": "All users behind the same proxy share one bucket; unrelated logins return 429 'Demasiadas peticiones, intenta más tarde'."
+    },
+    "remediation": {
+      "strategy": "Short term for launch: document the risk and optionally raise RATE_LIMIT_BURST (env exists) to absorb legitimate bursts. Proper fix: a custom key extractor that trusts X-Forwarded-For ONLY for connections from Railway's proxy peer (naive SmartIpKeyExtractor blindly trusts client headers and reintroduces spoofing — key_extractor.rs:91-94 of tower-governor 0.1.0; use_headers() only toggles x-ratelimit-* response headers, it is NOT the keying mechanism). Re-test on Railway. Keep peer-addr as the local default."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "medium",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "medium"
+    },
+    "confidence": {
+      "score": "medium",
+      "reason": "Code-level conclusion is solid (no use_headers; peer-addr key verified by dynamic test showing no XFF bypass), but the production impact depends on Railway's proxy topology — requires deployment testing per the audit skill's bar."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "Carrera en alta_empresa sin índice único: correos duplicados crean tenant keys compartidas (cross-tenant total)",
+    "description": "alta_empresa hace find-then-insert con ~100 ms de argon2 ENTRE el check y el insert (ensancha la ventana) y la colección empresas NO tiene índice único en correo (db.rs solo crea el TTL de verificaciones; el 'índice único' de migrate_tenant.js es un comentario). Dos registros simultáneos del mismo correo → ambos insertan → ambos JWT tienen sub idéntico → ambos leen/escriben TODOS los documentos (planes_pago, pagos, dashboard_stats, recibos) filtrados por ese correo: cross-tenant completo entre las dos 'empresas'. Race estrecha pero con el registro público y el impacto total; el fix estándar (índice único) es una línea en db.rs.",
+    "root_cause": "db::connect in backend/src/db.rs does not create a unique index on empresas.correo, allowing concurrent registrations to bypass the find-then-insert duplicate check in alta_empresa and mint two tenants sharing one identity.",
+    "intended_behavior": "El correo es la clave de tenant (sub del JWT): debe ser único a nivel de base de datos; el check en alta_empresa es una optimización, no la garantía.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 125,
+        "scope": "main",
+        "description": "Public route POST /api/empresas (rate-limited, no auth)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/empresa.rs",
+        "line": 25,
+        "scope": "alta_empresa",
+        "description": "find_one(correo) duplicate check returns None for both concurrent requests; ~100 ms of argon2 hashing runs between the check and the insert, widening the window."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/routes/empresa.rs",
+        "line": 50,
+        "scope": "alta_empresa",
+        "description": "insert_one succeeds for both requests (no unique index rejects the second): two empresas share one correo = one tenant identity."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "timing_dependency",
+        "description": "Requires two concurrent registrations of the same correo within the check→insert window (~100 ms widened by argon2)."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Attacker races a victim's registration (or races itself) for the same correo: if both inserts land, the attacker's JWT (sub=correo) reads and mutates the victim's entire cartera, pagos, dashboard and recibos — the multi-tenant isolation is defeated for that tenant.",
+      "payloads": [
+        "Two parallel: curl -X POST /api/empresas -d '{\"correo\":\"victima@pymza.mx\",\"password\":\"...\",\"nombre_empresa\":\"...\"}'"
+      ],
+      "instructions": [
+        "Fire two (or N) concurrent registrations of the same correo and check db.empresas.countDocuments({correo: ...}) > 1. Race window is ~100 ms — may need several attempts or a slower-verify variant; requires deployment testing to demonstrate deterministically."
+      ],
+      "expected_result": "Two empresas documents with the same correo; both logins issue JWTs that scope the same tenant documents."
+    },
+    "remediation": {
+      "strategy": "Create the unique index at startup in db.rs (same idempotent pattern as the TTL index): empresas.create_index(correo, unique). On duplicate-key error return the existing 'Ya existe una empresa registrada' 400. One line + error mapping; the find-then-insert stays as UX."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "low",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "medium"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Absence of the unique index verified directly in db.rs and via mongosh index listing; the race window is a structural property of find-then-insert with 100 ms of hashing in between. Not reproduced deterministically (race), but the fix is standard and the blast radius is total."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "TOCTOU en registrar_pago: pago duplicado de cuota y estado 'Liquidado' falso",
+    "description": "registrar_pago valida 'cuota ya registrada' leyendo la cartera en memoria y luego inserta en pagos — sin índice único (plan_id, cuota) ni transacción. Dos requests concurrentes de la misma cuota (o un doble-click) pasan ambos la validación y ambos insertan: cobrado inflado en resumen y, con N duplicados, cuotas_pagadas >= plazo dispara estado 'Liquidado' con cuotas impagas — el ledger financiero queda corrupto y persistente.",
+    "root_cause": "registrar_pago in backend/src/routes/credito.rs does not enforce uniqueness of (plan_id, cuota) at the database level, allowing concurrent inserts to double-register a cuota and corrupt the payment ledger.",
+    "intended_behavior": "Cada cuota se registra una vez; el estado del plan (Activo/Moroso/Liquidado) deriva de pagos únicos por cuota.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 140,
+        "scope": "main",
+        "description": "Route POST /api/creditos/pagos (EmpresaSession only)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/credito.rs",
+        "line": 583,
+        "scope": "registrar_pago",
+        "description": "Validation of 'Cuota ya registrada' is done against in-memory reads of planes/pagos for the request — both concurrent requests observe 'not registered'."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/routes/credito.rs",
+        "line": 605,
+        "scope": "registrar_pago",
+        "description": "insert_one into pagos for both requests (no unique (plan_id, cuota) index): duplicated cuota → inflated cobrado and false 'Liquidado' in estado_plan."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Requires a valid JWT (tenant of the plan)."
+      },
+      {
+        "kind": "timing_dependency",
+        "description": "Two concurrent (or near-concurrent) registrations of the same cuota — a double-click suffices."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Mostly self-inflicted (double-click): the tenant's ledger shows a cuota paid twice and the plan may flip to 'Liquidado' with unpaid cuotas; financial reports (cobrado, aging, morosidad) become wrong. No cross-tenant effect.",
+      "payloads": [
+        "Two parallel: curl -X POST /api/creditos/pagos -d '{\"plan_id\":\"<id>\",\"cuota\":1,\"monto\":<pago_mensual>}'"
+      ],
+      "instructions": [
+        "Register a plan, then fire two concurrent registrar_pago for cuota 1; check db.pagos.countDocuments({plan_id: X, cuota: 1}) and the plan state."
+      ],
+      "expected_result": "Two pagos documents for cuota 1; cobrado double-counted; with enough duplicates the plan reports 'Liquidado' with unpaid cuotas."
+    },
+    "remediation": {
+      "strategy": "Unique index (plan_id, cuota) on pagos created in db.rs; on duplicate-key error return the existing 'Cuota ya registrada' 400. Same pattern as the recibos cap race (F8)."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "medium",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "medium"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Verified in source: validation against in-memory state, plain insert_one, and no (plan_id, cuota) unique index in db.rs; the failure mode follows deterministically from the race."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "Enumeración de correos de empresa vía respuesta y timing de login/registro",
+    "description": "POST /api/empresas responde 'Ya existe una empresa registrada con ese correo' (oráculo directo) y el login corre argon2 (~100 ms) solo si el correo existe (diferencia de timing medible). Con el rate limit 10 rps/burst 20 el enumerador alcanza ~36k pruebas/hora: suficiente para listas de correos corporativos objetivo y credential stuffing dirigido.",
+    "root_cause": "alta_empresa in backend/src/routes/empresa.rs does not neutralize the duplicate-correo response (and auth::login_empresa's argon2 verification does not run for unknown correos), allowing an unauthenticated enumerator to distinguish registered corminos.",
+    "intended_behavior": "No revelar si un correo está registrado: respuestas y timing uniformes para existente/inexistente.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 126,
+        "scope": "main",
+        "description": "Public POST /api/empresas (rate-limited only)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/empresa.rs",
+        "line": 25,
+        "scope": "alta_empresa",
+        "description": "find_one(correo) distinct response for registered correos ('Ya existe...')."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/auth.rs",
+        "line": 135,
+        "scope": "login_empresa",
+        "description": "argon2 verify runs only for existing correos (~100 ms) — timing oracle; non-existent correos return immediately with the same message."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "network_routing",
+        "description": "Unauthenticated, but bounded by the public-endpoint rate limit (10 rps / burst 20 per IP — locally verified)."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "An unauthenticated attacker probes a corporate-domain list against /api/empresas (direct oracle) or times /api/login (100 ms delta) to learn which correos are registered, then targets credential stuffing on those accounts.",
+      "payloads": [
+        "curl -X POST /api/empresas -d '{\"correo\":\"<probe>@<dominio>\",\"password\":\"xxxxxxxx\",\"nombre_empresa\":\"x\"}'"
+      ],
+      "instructions": [
+        "POST the probe list to /api/empresas and record which return 'Ya existe una empresa registrada con ese correo'; optionally time /api/login responses to separate the ~100 ms argon2 arm."
+      ],
+      "expected_result": "Registered correos are distinguishable from unregistered ones without any authentication."
+    },
+    "remediation": {
+      "strategy": "Documented trade-off for launch (registration UX needs the duplicate message); fix when the business requires it: uniform 200-style response for registration attempts + dummy argon2 verify for unknown correos in login (constant-ish timing). The argon2 note at auth.rs already names the sync-blocking trade-off."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "low",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "low"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "The duplicate message is observable in the live smoke (POST /api/empresas responses during the audit) and the argon2 timing asymmetry is structural in auth.rs:135-160 (verify only on found)."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "Carrera en el tope de 2 recibos: inflación de score en la red compartida",
+    "description": "El tope de 2 recibos por cliente es count_documents + insert_one sin índice único ni transacción: N requests concurrentes cuentan 0 y todos insertan (+25 de score cada uno, score global compartido de la red). Impacto: el score SÍ decide evaluar_credito (score>700 → capacidad 5000, else 2000 — crédito.448-449), así que el score inflado puede voltear Rechazado→Aprobado en la banda de pago mensual 2000-5000; PERO autorizar_credito (el endpoint que inserta el crédito) jamás consulta el score, así que la recomendación se manipula, no el dinero persistido. Ya documentado como N2 en la auditoría de la ola 5 — sigue abierto.",
+    "root_cause": "recibo_subir in backend/src/routes/kyc.rs does not enforce the 2-recibos cap at the database level, allowing concurrent inserts to exceed the cap and inflate the shared score.",
+    "intended_behavior": "Máximo 2 recibos legibles por cliente (global por CURP), sin importar la empresa que suba.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "backend/src/main.rs",
+        "line": 137,
+        "scope": "main",
+        "description": "Route POST /api/clientes/:curp/recibos (EmpresaSession only)."
+      },
+      {
+        "kind": "propagation",
+        "file": "backend/src/routes/kyc.rs",
+        "line": 189,
+        "scope": "recibo_subir",
+        "description": "count_documents({curp}) >= 2 check against in-memory result (kyc.rs:189, guard at 196-201) — concurrent requests all observe count < 2."
+      },
+      {
+        "kind": "sink",
+        "file": "backend/src/routes/kyc.rs",
+        "line": 202,
+        "scope": "recibo_subir",
+        "description": "insert_one into recibos (kyc.rs:202) and +25 score update ($set, kyc.rs:216-225) per successful concurrent insert: cap exceeded, shared score inflated."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Requires a valid JWT (any empresa — recibos are network-global by design)."
+      },
+      {
+        "kind": "timing_dependency",
+        "description": "Concurrent submissions of legible recibos for the same curp."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "A tenant (or colluding tenants) fires concurrent recibos uploads for one curp: the 2-cap is bypassed and the shared score inflates beyond its documented ceiling. Score does not gate money today (documented in ola 5 audit), so impact is the integrity of the shared signal.",
+      "payloads": [
+        "N parallel: curl -X POST /api/clientes/<curp>/recibos -d @fixture_recibo_b64.json"
+      ],
+      "instructions": [
+        "Upload the same legible fixture N times concurrently and count db.recibos for the curp."
+      ],
+      "expected_result": "recibos count > 2 and score inflated +25 per successful concurrent insert."
+    },
+    "remediation": {
+      "strategy": "Same as F5/F6: partial unique index or a counted-unique key (e.g. unique (curp, tipo_secuencial)), or accept the documented ceiling (ola 5 N2) until concurrency is real."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "low",
+        "reason": "Likelihood judged from exploitability and preconditions per finding description."
+      },
+      "impact": {
+        "score": "low",
+        "reason": "Impact judged from attacker gains per finding description."
+      },
+      "overall_severity": "low"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Structural race verified in source (count then insert, no unique constraint) and already documented in the ola 5 audit (N2); bounded impact confirmed by reading evaluar_credito's score usage."
+    }
+  },
+  {
+    "verdict": "rejected",
+    "reason": "El hunt estático propuso que monto:1e400 parsea como INFINITY y revienta json!() (panic). La validación dinámica lo refuta: el extractor Json de axum rechaza el número fuera de rango con 400 'Failed to parse the request body as JSON: monto: number out of range' ANTES del handler (probado contra el árbol integrado). El vector no es alcanzable por HTTP."
+  },
+  {
+    "verdict": "rejected",
+    "reason": "El hunt propuso que texto con emoji en 'producto' hace fallar save_to_bytes (expect → panic). La validación dinámica lo refuta: printpdf descarta los caracteres no codificables ('Crédito 🚀 émoji-test' → 'Crédito  émoji-test'), el contrato responde 200 %PDF-1.3 y el proceso sigue vivo. Queda como hardening: el texto de entrada podría truncarse silenciosamente, sin daño de seguridad."
+  }
+]
