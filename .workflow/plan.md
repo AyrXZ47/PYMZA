@@ -45,7 +45,7 @@ Constraints:
 | 4 | Cartera viva: pagos + estados de plan + gráficas SVG + favicon | [x] auditada 2026-09-04 |
 | 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
 | 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] auditada 2026-09-06 — **REJECTED** (F1/F2 HIGH + S1 Dockerfile) → hotfix en ola 6-fix, re-auditoría puntual pendiente |
-| 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [ ] planificada 2026-09-06 |
+| 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [x] integrada 2026-09-06; re-auditoría puntual pendiente |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
@@ -250,10 +250,10 @@ F8 — quedan en el ledger para olas 7+).
 
 ### Tareas
 
-- [ ] T1 (executor): F1+F2 validación plazo/monto en evaluar+autorizar → 400 + tests
-- [ ] T2 (executor): S1 Dockerfile.backend (COPY + rust:1.97)
+- [x] T1 (executor): F1+F2 validación plazo/monto en evaluar+autorizar → 400 + tests (commit `a32b096`)
+- [x] T2 (executor): S1 Dockerfile.backend (COPY + rust:1.97) (commit `ab551d0`)
 - [x] T3 (executor): S2 regenerar CSS compilado — **falso positivo**: las 4 clases ya estaban (forma escapada `hover\:bg-blue-700` etc.); regeneración byte-idéntica (hash `15cdb136`). El grep del auditor ola 6 no escapaba los selectores de Tailwind v4
-- [ ] T4 (executor, APROBADO por V): F5 índice único `empresas.correo`
+- [x] T4 (executor, APROBADO por V): F5 índice único `empresas.correo` (commit `31487bb`)
 
 ### Plan de integración (6-fix)
 
