@@ -44,7 +44,8 @@ Constraints:
 | 3 | Identidad verificable: CURP dv, correo, OTP teléfono (WhatsApp/mock) | [x] auditada 2026-08-31 |
 | 4 | Cartera viva: pagos + estados de plan + gráficas SVG + favicon | [x] auditada 2026-09-04 |
 | 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
-| 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] integrada 2026-09-06 (merges + cargo build/test OK, push main) — humo Docker PENDIENTE (socket docker requiere reinicio para aplicar grupo) |
+| 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] auditada 2026-09-06 — **REJECTED** (F1/F2 HIGH + S1 Dockerfile) → hotfix en ola 6-fix, re-auditoría puntual pendiente |
+| 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [ ] planificada 2026-09-06 |
 | 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
 
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
@@ -203,6 +204,85 @@ El auditor corre `.workflow/audit-checklist.md` sobre el árbol integrado y,
 
 ---
 
+## Ola 6-fix (mini-ola): hotfix del release gate
+
+Contexto: la ola 6 quedó **REJECTED** (`.workflow/audits/wave6.md`): F1/F2 HIGH
+confirmados en vivo (DoS con `plazo_meses` sin validar; plan envenenado
+persistido), `Dockerfile.backend` no construye (S1) y CSS sin regenerar (S2).
+La auditoría ya validó las recetas de fix — esta ola solo las aplica. Todo lo
+demás del gate está en verde (tenant isolation del PDF PASA, CORS, E1/E2
+cerradas, rate limit OK, 68+40 tests).
+
+**Detalles del fix ya validados por el auditor (no re-inventar):**
+- **F1/F2** (HIGH): `evaluar` con `plazo_meses` gigante → `collect()` ~86 GB →
+  OOM (RSS 30 GB medido); `autorizar` persiste el plan envenenado → cartera
+  congelada, contrato-PDF = OOM persistente. Fix: validar `plazo_meses ∈ 3..=12`
+  y `monto > 0` finito en `evaluar_credito` Y `autorizar_credito` → 400 con el
+  mensaje del contrato. ~15 líneas + tests (payloads de prueba: `plazo_meses:
+  1000000`, `monto: -1`, `monto: 1e400` — este último ya devuelve 400 hoy).
+- **S1** (bloqueante de Railway): `Dockerfile.backend` tiene 2 bugs:
+  `COPY backend/Cargo.toml backend/Cargo.toml` (destino equivocado → "could
+  not find Cargo.toml in /build") y `FROM rust:1.83-bookworm` (ya no compila
+  `time-core-0.1.9`, edition2024). Fix validado EN VIVO por el auditor:
+  `COPY backend/Cargo.toml ./Cargo.toml` + `COPY backend/src ./src` +
+  `FROM rust:1.97-bookworm AS builder` → build OK, imagen con
+  `tesseract 5.3.0 + spa`. Sin esto Railway no despliega.
+- **S2** (menor): el botón "Descargar contrato" usa 4 clases Tailwind que no
+  están en `assets/tailwind.css` (`hover:bg-blue-700`, `py-1.5`,
+  `hover:bg-slate-300`, `dark:bg-slate-700`). Fix: `cd frontend &&
+  ./tailwind.sh` + commit del CSS.
+- **T4 OPCIONAL (solo si V lo aprueba) — F5**: carrera en `alta_empresa` sin
+  índice único en `empresas.correo` → dos registros simultáneos comparten
+  tenant key (cross-tenant total para ese correo). Fix barato: índice único en
+  la inicialización del pool (`db.rs`). Recomendado antes de que el cliente
+  real empiece a probar esta semana.
+
+### Mapa de propiedad (6-fix)
+
+| Archivo/glob | Dueño |
+|-----------|-------|
+| `backend/src/routes/credito.rs` (F1/F2 + tests), `Dockerfile.backend` (S1), `backend/src/db.rs` (T4 opcional) | executor único |
+| `frontend/assets/tailwind.css` (S2, regenerado — nunca a mano) | executor único |
+
+Un solo executor: los tres fixes son ~20 líneas en total y la paralelización
+no compra nada. Fuera de alcance: TODO lo demás (sin refactor, sin F3/F4/F6-
+F8 — quedan en el ledger para olas 7+).
+
+### Tareas
+
+- [ ] T1 (executor): F1+F2 validación plazo/monto en evaluar+autorizar → 400 + tests
+- [ ] T2 (executor): S1 Dockerfile.backend (COPY + rust:1.97)
+- [ ] T3 (executor): S2 regenerar CSS compilado
+- [ ] T4 (executor, SOLO si V aprueba): F5 índice único `empresas.correo`
+
+### Plan de integración (6-fix)
+
+Un solo branch → integrador mergea `wave6fix-executor-1` → `main` y corre:
+
+```bash
+cd backend && cargo build && cargo test          # 68+passed, 0 failed
+cd frontend && cargo check --target wasm32-unknown-unknown && cargo test
+docker compose build                              # AMBOS servicios construyen (S1 verificado)
+docker run --rm $(docker compose ps -q backend) tesseract --version
+```
+
+### Re-auditoría puntual (NO repetir el gate completo)
+
+El auditor solo verifica, en `main` integrado: (1) `cargo test` backend+frontend;
+(2) los 3 payloads de F1/F2 → **400** contra el backend corriendo; (3)
+`docker compose build` OK + `tesseract --version` dentro de la imagen. Veredicto
+al final de `.workflow/audits/wave6.md` (sección "Re-auditoría"). Si APPROVED →
+V despliega con `docs/DEPLOY.md`.
+
+### Ledger post-despliegue (olas 7+, del security-audit)
+
+F3 (OTP sin comparar teléfono — MEDIUM), F4 (bucket rate-limiter global en
+Railway — MEDIUM, requiere testing en Railway), F6 (TOCTOU `registrar_pago` —
+MEDIUM), F7 (enumeración de correos — LOW), F8 (carrera tope de recibos — LOW),
+hardening de `mongo:latest` del compose para local (kernel ≥6.19).
+
+---
+
 ## Decision log
 
 Olas 1–5 (contexto histórico; detalle en `.workflow/audits/wave1.md` … `wave5.md`):
@@ -229,4 +309,5 @@ Ola 6 (nuevas):
 | 2026-09-05 | Backups = feature de Atlas (sin código); DEPLOY.md documenta la verificación | No reimplementar lo que el proveedor trae |
 | 2026-09-05 | El despliegue a Railway lo ejecuta V con `docs/DEPLOY.md` DESPUÉS del release gate | V tiene la cuenta y las credenciales; el release gate (security audit) corre antes de exponer nada |
 | 2026-09-05 | E2 cerrada con `fixture_recibo.png` nuevo | El humo de recibos queda reproducible sin imagen sintética ad-hoc |
+| 2026-09-06 | Ola 6 REJECTED → mini-ola 6-fix (un executor, ~20 líneas): F1/F2 validación plazo/monto, S1 Dockerfile, S2 CSS; T4 F5 índice único opcional si V aprueba | Los fixes ya validados en vivo por el auditor; la paralelización no compra nada. Ledger F3-F8 → olas 7+ |
 | 2026-09-06 | Ola 6 REJECTED (release gate): F1/F2 HIGH (`plazo_meses` sin validar → OOM ~86GB en evaluar / plan envenenado que congela cartera), Dockerfile.backend no construye (COPY a subdir + rust:1.83 < edition2024), CSS de cartera sin regenerar. Fixs de 3 piezas + re-auditoría puntual; tenant PDF OK, resto del gate en verde | Auditoría en fresco con evidencia en vivo: el humo Docker pendiente era la única red que quedaba y sí atrapó los 2 bugs de build; los límites de entrada de evaluar/autorizar eran un hueco lógico que ningún test cubría |
