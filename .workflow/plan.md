@@ -252,7 +252,7 @@ F8 — quedan en el ledger para olas 7+).
 
 - [ ] T1 (executor): F1+F2 validación plazo/monto en evaluar+autorizar → 400 + tests
 - [ ] T2 (executor): S1 Dockerfile.backend (COPY + rust:1.97)
-- [ ] T3 (executor): S2 regenerar CSS compilado
+- [x] T3 (executor): S2 regenerar CSS compilado — **falso positivo**: las 4 clases ya estaban (forma escapada `hover\:bg-blue-700` etc.); regeneración byte-idéntica (hash `15cdb136`). El grep del auditor ola 6 no escapaba los selectores de Tailwind v4
 - [ ] T4 (executor, APROBADO por V): F5 índice único `empresas.correo`
 
 ### Plan de integración (6-fix)
@@ -310,4 +310,5 @@ Ola 6 (nuevas):
 | 2026-09-05 | El despliegue a Railway lo ejecuta V con `docs/DEPLOY.md` DESPUÉS del release gate | V tiene la cuenta y las credenciales; el release gate (security audit) corre antes de exponer nada |
 | 2026-09-05 | E2 cerrada con `fixture_recibo.png` nuevo | El humo de recibos queda reproducible sin imagen sintética ad-hoc |
 | 2026-09-06 | Ola 6 REJECTED → mini-ola 6-fix (un executor, ~20 líneas): F1/F2 validación plazo/monto, S1 Dockerfile, S2 CSS; T4 F5 índice único opcional si V aprueba | Los fixes ya validados en vivo por el auditor; la paralelización no compra nada. Ledger F3-F8 → olas 7+ |
+| 2026-09-06 | S2 = falso positivo: el grep del auditor no escapaba los selectores de Tailwind v4 (`hover\:bg-blue-700`); regeneración del CSS byte-idéntica (hash `15cdb136`) | Lección: los greps sobre CSS compilado de Tailwind deben escapar `:` y `.`; verificación del executor con `git hash-object` = blob en main |
 | 2026-09-06 | Ola 6 REJECTED (release gate): F1/F2 HIGH (`plazo_meses` sin validar → OOM ~86GB en evaluar / plan envenenado que congela cartera), Dockerfile.backend no construye (COPY a subdir + rust:1.83 < edition2024), CSS de cartera sin regenerar. Fixs de 3 piezas + re-auditoría puntual; tenant PDF OK, resto del gate en verde | Auditoría en fresco con evidencia en vivo: el humo Docker pendiente era la única red que quedaba y sí atrapó los 2 bugs de build; los límites de entrada de evaluar/autorizar eran un hueco lógico que ningún test cubría |
