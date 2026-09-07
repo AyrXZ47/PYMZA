@@ -253,7 +253,7 @@ F8 — quedan en el ledger para olas 7+).
 - [ ] T1 (executor): F1+F2 validación plazo/monto en evaluar+autorizar → 400 + tests
 - [ ] T2 (executor): S1 Dockerfile.backend (COPY + rust:1.97)
 - [ ] T3 (executor): S2 regenerar CSS compilado
-- [ ] T4 (executor, SOLO si V aprueba): F5 índice único `empresas.correo`
+- [ ] T4 (executor, APROBADO por V): F5 índice único `empresas.correo`
 
 ### Plan de integración (6-fix)
 

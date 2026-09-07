@@ -31,7 +31,7 @@ Tres fixes pequeños, cada uno un commit (ver commits abajo):
   el CSS compilado (`hover:bg-blue-700`, `py-1.5`, `hover:bg-slate-300`,
   `dark:bg-slate-700`). Regenera: `cd frontend && ./tailwind.sh` y commit del
   `frontend/assets/tailwind.css` resultante. NUNCA edites el CSS a mano.
-- **T4 — OPCIONAL (SOLO si el prompt de V lo aprueba): F5** — carrera en
+- **T4 — F5 (APROBADO por V 2026-09-06):** carrera en
   `alta_empresa`: sin índice único, dos registros simultáneos comparten la
   tenant key. Fix: crear índice único en `empresas.correo` durante la
   inicialización del pool en `backend/src/db.rs` (maneja el error de duplicado
