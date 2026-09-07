@@ -21,6 +21,14 @@ pub async fn connect() -> Result<Client, Box<dyn std::error::Error>> {
     if let Err(e) = crear_indice_ttl(&client).await {
         eprintln!("⚠️ No se pudo crear el índice TTL de verificaciones: {e}");
     }
+    // F5 (auditoría ola 6): índice único en `empresas.correo` — cierra la
+    // carrera find-then-insert de alta_empresa (dos inserts simultáneos del
+    // mismo correo compartían la tenant key → cross-tenant). Idempotente; si
+    // falla (dupes históricas o sin permisos), el backend arranca igual y se
+    // reintenta en el próximo arranque.
+    if let Err(e) = crear_indice_unico_empresa_correo(&client).await {
+        eprintln!("⚠️ No se pudo crear el índice único de empresas.correo: {e}");
+    }
     println!("--- Pool de conexiones MongoDB inicializado ---");
     Ok(client)
 }
@@ -37,6 +45,21 @@ async fn crear_indice_ttl(client: &Client) -> Result<(), mongodb::error::Error> 
     let index = IndexModel::builder()
         .keys(doc! { "expira_en": 1 })
         .options(IndexOptions::builder().expire_after(Duration::from_secs(0)).build())
+        .build();
+    coll.create_index(index, None).await.map(|_| ())
+}
+
+/// Índice único sobre `empresas.correo`: el correo es la tenant key (claim
+/// `sub` del JWT), así que dos empresas con el mismo correo compartirían TODO
+/// (planes, pagos, dashboard, contratos). Con el índice, el segundo insert de
+/// la carrera falla en Mongo mismo.
+async fn crear_indice_unico_empresa_correo(client: &Client) -> Result<(), mongodb::error::Error> {
+    let coll = client
+        .database("pymza")
+        .collection::<mongodb::bson::Document>("empresas");
+    let index = IndexModel::builder()
+        .keys(doc! { "correo": 1 })
+        .options(IndexOptions::builder().unique(true).build())
         .build();
     coll.create_index(index, None).await.map(|_| ())
 }

@@ -204,6 +204,20 @@ fn error_status(status: StatusCode, message: &str) -> (StatusCode, Json<serde_js
     (status, Json(serde_json::json!({ "status": "error", "message": message })))
 }
 
+/// Contrato del dominio (F1/F2, auditoría ola 6): plazo 3..=12 meses y monto
+/// positivo finito. Sin esto, `generar_plan_pagos` materializa un Vec de
+/// `plazo_meses` elementos (i32::MAX → ~86 GB → OOM con 1 request) y
+/// `autorizar` persiste el plan envenenado. Devuelve el mensaje del 400.
+fn validar_plazo_y_monto(plazo_meses: i32, monto: f64) -> Option<&'static str> {
+    if !(3..=12).contains(&plazo_meses) {
+        return Some("El plazo debe estar entre 3 y 12 meses");
+    }
+    if !monto.is_finite() || monto <= 0.0 {
+        return Some("El monto debe ser mayor a 0");
+    }
+    None
+}
+
 // --- Resumen de cartera (ola 4): buckets y shape exacta del contrato ---
 
 /// Bucket de antigüedad de una cuota vencida (días desde su vencimiento, ≥1).
@@ -431,8 +445,13 @@ pub async fn obtener_resumen(
 pub async fn evaluar_credito(
     State(client): State<mongodb::Client>,
     _sesion: EmpresaSession,
-    Json(payload): Json<EvaluarReq>
-) -> Json<serde_json::Value> {
+    Json(payload): Json<EvaluarReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Validación del dominio ANTES de tocar la base: un plazo gigante no debe
+    // llegar a `generar_plan_pagos` (OOM, F1).
+    if let Some(msg) = validar_plazo_y_monto(payload.plazo_meses, payload.monto) {
+        return Err(error_status(StatusCode::BAD_REQUEST, msg));
+    }
     let coll_clientes = client.database("pymza").collection::<Cliente>("clientes");
 
     match coll_clientes.find_one(
@@ -462,25 +481,25 @@ pub async fn evaluar_credito(
 
             let plan_pagos = generar_plan_pagos(payload.monto, payload.plazo_meses, tasa);
 
-            Json(serde_json::json!(EvaluarRes {
+            Ok(Json(serde_json::json!(EvaluarRes {
                 status: "success".to_string(),
                 estado: estado.to_string(),
                 pago_mensual,
                 tasa_interes: tasa,
                 plan_pagos,
                 consideraciones,
-            }))
+            })))
         },
-        Ok(None) => Json(serde_json::json!({
+        Ok(None) => Ok(Json(serde_json::json!({
             "status": "error",
             "message": "Cliente no encontrado"
-        })),
+        }))),
         Err(e) => {
             eprintln!("🚨 ERROR MONGODB: {:?}", e);
-            Json(serde_json::json!({
+            Ok(Json(serde_json::json!({
                 "status": "error",
                 "message": "Error en la base de datos"
-            }))
+            })))
         }
     }
 }
@@ -488,8 +507,13 @@ pub async fn evaluar_credito(
 pub async fn autorizar_credito(
     State(client): State<mongodb::Client>,
     sesion: EmpresaSession,
-    Json(payload): Json<AutorizarReq>
-) -> Json<serde_json::Value> {
+    Json(payload): Json<AutorizarReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Validación del dominio ANTES de insertar: un plan envenenado se
+    // persistiría y congelaría la cartera/contrato desde estado (F2).
+    if let Some(msg) = validar_plazo_y_monto(payload.plazo_meses, payload.monto_total) {
+        return Err(error_status(StatusCode::BAD_REQUEST, msg));
+    }
     let plan_pago = PlanPago {
         id: None, // Mongo lo genera al insertar
         empresa: sesion.correo.clone(),
@@ -509,7 +533,10 @@ pub async fn autorizar_credito(
         Ok(res) => res.inserted_id,
         Err(e) => {
             eprintln!("🚨 ERROR AL GUARDAR PLAN DE PAGO: {:?}", e);
-            return Json(serde_json::json!({"status": "error", "message": "Error al guardar el plan de pago"}));
+            return Err(error_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Error al guardar el plan de pago",
+            ));
         }
     };
     let plan_id = match inserted_id {
@@ -523,7 +550,7 @@ pub async fn autorizar_credito(
         upsert_dashboard_stats(&client, &sesion.correo, &planes, &pagos_por_plan).await;
     }
 
-    Json(serde_json::json!({"status": "success", "plan_id": plan_id}))
+    Ok(Json(serde_json::json!({"status": "success", "plan_id": plan_id})))
 }
 
 pub async fn obtener_creditos(
@@ -1020,5 +1047,89 @@ mod tests {
         let hoy = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
         let r = resumen_cartera(&[plan_a, plan_b, liquidado], &HashMap::new(), &HashMap::new(), hoy);
         assert_eq!(r["tasa_morosidad"], 0.5, "1 moroso / 2 no liquidados");
+    }
+
+    // --- F1/F2 (auditoría ola 6): plazo 3..=12 y monto > 0 finito ---
+
+    #[test]
+    fn validar_plazo_y_monto_aplica_el_contrato() {
+        assert_eq!(validar_plazo_y_monto(3, 100.0), None, "borde inferior válido");
+        assert_eq!(validar_plazo_y_monto(12, 10000.0), None, "borde superior válido");
+        assert_eq!(
+            validar_plazo_y_monto(1000000, 100.0),
+            Some("El plazo debe estar entre 3 y 12 meses")
+        );
+        assert_eq!(validar_plazo_y_monto(0, 100.0), Some("El plazo debe estar entre 3 y 12 meses"));
+        assert_eq!(validar_plazo_y_monto(6, -1.0), Some("El monto debe ser mayor a 0"));
+        assert_eq!(validar_plazo_y_monto(6, 0.0), Some("El monto debe ser mayor a 0"));
+    }
+
+    // Client sin servidor: la validación corre ANTES de cualquier acceso a
+    // Mongo, así que el client jamás se usa y los tests corren sin DB —
+    // NADA se lee ni se inserta en planes_pago (el insert está después).
+    async fn client_test() -> mongodb::Client {
+        let opts = mongodb::options::ClientOptions::parse("mongodb://127.0.0.1:27017")
+            .await
+            .unwrap();
+        mongodb::Client::with_options(opts).unwrap()
+    }
+
+    fn sesion_test() -> EmpresaSession {
+        EmpresaSession { correo: "test@pymza.mx".into(), nombre: "Test".into() }
+    }
+
+    #[tokio::test]
+    async fn evaluar_rechaza_plazo_gigante_con_400() {
+        // F1: plazo gigante → collect() de ~86 GB → OOM; ahora muere con 400
+        // antes de generar el plan.
+        let req = EvaluarReq { curp: "GARM980412HDFNRL05".into(), monto: 10000.0, plazo_meses: 1000000 };
+        let res = evaluar_credito(State(client_test().await), sesion_test(), Json(req)).await;
+        let (status, body) = res.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.0["status"], "error");
+        assert_eq!(body.0["message"], "El plazo debe estar entre 3 y 12 meses");
+    }
+
+    #[tokio::test]
+    async fn evaluar_rechaza_monto_negativo_con_400() {
+        let req = EvaluarReq { curp: "GARM980412HDFNRL05".into(), monto: -1.0, plazo_meses: 6 };
+        let res = evaluar_credito(State(client_test().await), sesion_test(), Json(req)).await;
+        let (status, body) = res.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.0["message"], "El monto debe ser mayor a 0");
+    }
+
+    #[tokio::test]
+    async fn autorizar_rechaza_plazo_gigante_con_400() {
+        // F2: el plan envenenado jamás debe llegar a planes_pago (validación
+        // antes del insert → nada se inserta).
+        let req = AutorizarReq {
+            cliente_curp: "GARM980412HDFNRL05".into(),
+            producto: "Crédito comercial".into(),
+            monto_total: 10600.0,
+            plazo_meses: 1000000,
+            pago_mensual: 1766.67,
+            tasa_interes: 0.06,
+        };
+        let res = autorizar_credito(State(client_test().await), sesion_test(), Json(req)).await;
+        let (status, body) = res.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.0["message"], "El plazo debe estar entre 3 y 12 meses");
+    }
+
+    #[tokio::test]
+    async fn autorizar_rechaza_monto_negativo_con_400() {
+        let req = AutorizarReq {
+            cliente_curp: "GARM980412HDFNRL05".into(),
+            producto: "Crédito comercial".into(),
+            monto_total: -1.0,
+            plazo_meses: 6,
+            pago_mensual: 0.0,
+            tasa_interes: 0.06,
+        };
+        let res = autorizar_credito(State(client_test().await), sesion_test(), Json(req)).await;
+        let (status, body) = res.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.0["message"], "El monto debe ser mayor a 0");
     }
 }
