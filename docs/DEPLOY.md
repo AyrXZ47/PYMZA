@@ -64,15 +64,17 @@ presente la distinción: `ALLOWED_ORIGINS` del backend lleva el dominio del
 1. Railway → mismo proyecto → **New Service → GitHub repo** de nuevo
    (segunda instancia del mismo repo); en **Build**, usa
    `Dockerfile.frontend`.
-2. En **Settings → Build** agrega la variable de build:
+2. En la pestaña **Variables** del servicio agrega:
 
-   | Build arg | Valor |
+   | Variable | Valor |
    |---|---|
    | `API_BASE` | `<pegar-aquí>` — el dominio público del backend del paso 2, **con** `https://` y **sin** `/` final |
 
-   (Desde la UI: en el servicio → Settings → Build → "Add build arg", o en
-   `railway.toml`.) Compilar sin `API_BASE` produce un WASM que llama a
-   `http://127.0.0.1:3000` — inútil en producción.
+   En Railway no hay una sección "build args": toda variable del servicio se
+   pasa al build automáticamente porque `Dockerfile.frontend` la declara con
+   `ARG API_BASE`. Editar la variable dispara un **re-deploy con re-build** —
+   déjalo terminar. Compilar sin `API_BASE` (o con la variable vacía) produce
+   un WASM que llama a `http://127.0.0.1:3000` — inútil en producción.
 3. **Settings → Networking → Generate Domain** para el frontend y mapea el
    puerto **8080**.
 
