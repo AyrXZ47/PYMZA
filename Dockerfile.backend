@@ -1,6 +1,9 @@
 # Backend PYMZA (Axum + MongoDB). Build multi-stage: rust → debian slim.
 # Contexto de build: raíz del repo. Uso: docker build -f Dockerfile.backend .
-FROM rust:1.83-bookworm AS builder
+# 1.97 = toolchain del host (mismo patrón que Dockerfile.frontend, commit
+# bd3553a): rust:1.83 ya no compila deps con edition2024 (p. ej. time-core
+# 0.1.9). Sube el tag cuando el lock exija más.
+FROM rust:1.97-bookworm AS builder
 
 # El driver MongoDB compila con la feature openssl-tls: requiere libs dev de OpenSSL.
 RUN apt-get update \
@@ -8,8 +11,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY backend/Cargo.toml backend/Cargo.toml
-COPY backend/src backend/src
+# DESTINO ./ : copiar con la ruta relativa "backend/Cargo.toml backend/Cargo.toml"
+# dejaba el manifest en /build/backend/ → "could not find Cargo.toml in /build".
+COPY backend/Cargo.toml ./Cargo.toml
+COPY backend/src ./src
 # Cargo.lock está gitignored en el repo (ver .gitignore): se genera aquí para un build reproducible.
 RUN cargo build --release
 
