@@ -299,6 +299,28 @@ En Meta: registrar el dominio **completo** del frontend
 (domain compartido de Railway, no verificable por nosotros). El content de la
 etiqueta es público (se sirve en el HTML visible) — commitearlo es seguro.
 
+**RESULTADO (2026-09-07): Micro-tarea completada y dominio VERIFICADO por Meta.**
+El executor usó el fallback sed (commit `98b1041` en `Dockerfile.frontend`,
+merge `ea3efb0`): no pudo verificar el template nativo en LOCAL porque la
+toolchain del host no puede correr `dx build` con este repo (dx instalado en
+host = 0.7.10, que rechaza el pin `dioxus =0.7.9`; wasm-bindgen-cli host 0.2.126
+vs lock 0.2.128). Verificó en su lugar con el build real de Docker
+(dx 0.7.9 instalado dentro del contenedor): exit 0, etiqueta ×1, sin
+inyecciones duplicadas, title/div#main intactos — dirección de V confirmó el
+estado en vivo (curl: etiqueta presente; Meta: dominio verificado).
+
+**Nota para ola 7 (mecanismo de head-tags):** el único lugar donde corre
+dx 0.7.9 es el contenedor Docker. Un `frontend/index.html` nativo quizá funcione
+allí, pero quedó sin explorar (peligro: sin verificación local). Próxima vez que
+haya que editar el `<head>` (OG tags, favicon, más verificaciones): intentar el
+template nativo con verify DENTRO del contenedor (docker build + grep en la
+salida) antes del sed; sed solo como plan B. Si el negocio cambia de nombre
+(IMPI), migrar el dominio de Meta es tocar una línea del template + nueva
+propiedad en Meta — la base de código no conoce la marca.
+
+Pendiente a Meta (bloquea OTP de ola 7): la revisión del app request de
+WhatsApp Cloud API sigue en revisión — esperando a Meta.
+
 ---
 
 ## Decision log
