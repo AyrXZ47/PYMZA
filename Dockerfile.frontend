@@ -28,7 +28,9 @@ COPY frontend/assets ./assets
 # Docker compensa porque el ENV bustea el cache de las capas siguientes. Si
 # algún día se cachea el target/ entre builds, pasar API_BASE a un archivo
 # fuente generado para forzar la recompilación.
-RUN dx build --release --debug-symbols=false
+RUN dx build --release --debug-symbols=false \
+    && sed 's|</head>|<meta name="facebook-domain-verification" content="ehy3wun1lov49xq198649n4166udo6" />\n</head>|' /app/target/dx/frontend/release/web/public/index.html > /tmp/idx.html \
+    && mv /tmp/idx.html /app/target/dx/frontend/release/web/public/index.html
 
 FROM nginx:1.27-alpine AS runtime
 # Salida de dx 0.7.9 (web): target/dx/frontend/release/web/public (no dist/).
