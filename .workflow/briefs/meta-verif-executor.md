@@ -11,7 +11,7 @@ Crear `frontend/index.html` como template del HTML shell de Dioxus 0.7.9 con la
 etiqueta de verificación de Meta dentro de `<head>`:
 
 ```html
-<meta name="facebook-domain-verification" content="2evl3zta04uil86lc7sqfo9begdn1g" />
+<meta name="facebook-domain-verification" content="ehy3wun1lov49xq198649n4166udo6" />
 ```
 
 Hoy no existe ese archivo: dx lo GENERA solo desde `Dioxus.toml`. Cuando existe
@@ -30,7 +30,7 @@ El template debe replicar el shell generado (verificado en vivo en producción):
         <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta charset="UTF-8">
-        <meta name="facebook-domain-verification" content="2evl3zta04uil86lc7sqfo9begdn1g" />
+        <meta name="facebook-domain-verification" content="ehy3wun1lov49xq198649n4166udo6" />
     </head>
     <body>
         <div id="main"></div>
