@@ -281,6 +281,24 @@ Railway — MEDIUM, requiere testing en Railway), F6 (TOCTOU `registrar_pago` �
 MEDIUM), F7 (enumeración de correos — LOW), F8 (carrera tope de recibos — LOW),
 hardening de `mongo:latest` del compose para local (kernel ≥6.19).
 
+### Micro-tarea fuera de ola: verificación de dominio de Meta (destrabar OTP)
+
+Meta pide `<meta name="facebook-domain-verification">` en el `<head>` del sitio.
+El shell HTML NO existe como archivo (dx 0.7.9 lo genera desde `Dioxus.toml`;
+salida en `target/dx/frontend/release/web/public/index.html`), así que la vía
+dx-nativa es crear `frontend/index.html` como template: dx lo usa verbatim y
+inyecta automáticamente el `<script>` del WASM. Punto de montaje exacto
+requerido: `<div id="main"></div>`. Fallback si el template rompe el build de
+dx 0.7.9: un `RUN sed` en `Dockerfile.frontend` justo tras el `dx build`.
+Verify del executor: `cd frontend && dx build --release
+--debug-symbols=false && grep -c facebook-domain-verification
+target/dx/frontend/release/web/public/index.html` → 1.
+
+En Meta: registrar el dominio **completo** del frontend
+(`triumphant-commitment-frontend.up.railway.app`), nunca `up.railway.app`
+(domain compartido de Railway, no verificable por nosotros). El content de la
+etiqueta es público (se sirve en el HTML visible) — commitearlo es seguro.
+
 ---
 
 ## Decision log
@@ -312,4 +330,5 @@ Ola 6 (nuevas):
 | 2026-09-06 | Ola 6 REJECTED → mini-ola 6-fix (un executor, ~20 líneas): F1/F2 validación plazo/monto, S1 Dockerfile, S2 CSS; T4 F5 índice único opcional si V aprueba | Los fixes ya validados en vivo por el auditor; la paralelización no compra nada. Ledger F3-F8 → olas 7+ |
 | 2026-09-06 | S2 = falso positivo: el grep del auditor no escapaba los selectores de Tailwind v4 (`hover\:bg-blue-700`); regeneración del CSS byte-idéntica (hash `15cdb136`) | Lección: los greps sobre CSS compilado de Tailwind deben escapar `:` y `.`; verificación del executor con `git hash-object` = blob en main |
 | 2026-09-06 | Ola 6 REJECTED (release gate): F1/F2 HIGH (`plazo_meses` sin validar → OOM ~86GB en evaluar / plan envenenado que congela cartera), Dockerfile.backend no construye (COPY a subdir + rust:1.83 < edition2024), CSS de cartera sin regenerar. Fixs de 3 piezas + re-auditoría puntual; tenant PDF OK, resto del gate en verde | Auditoría en fresco con evidencia en vivo: el humo Docker pendiente era la única red que quedaba y sí atrapó los 2 bugs de build; los límites de entrada de evaluar/autorizar eran un hueco lógico que ningún test cubría |
+| 2026-09-07 | Meta domain verification vía template `frontend/index.html` (dx-nativo; fallback sed en Dockerfile) — micro-tarea single-executor fuera de ola, para destrabar OTP | El shell HTML no existe en repo; el template es el mecanismo oficial de dx. Un archivo, un commit — paralelizar no compra nada |
 | 2026-09-07 | **Producción viva y verificada**: login demo OK en vivo (200+token), CORS OK (`ALLOWED_ORIGINS` manual de V), WASM con `API_BASE=https://pymza-production-3a22…` compilado. Único fix: variable `API_BASE` del servicio frontend de Railway (estaba vacía → build con fallback `127.0.0.1:3000`). La DB nunca fue el problema; Railway NO auto-conecta servicios | `API_BASE` es compile-time (`option_env!`): variable vacía = build inútil, y cambiarla exige re-build. Lección en DEPLOY.md (`e041843`): en Railway es una Variable del servicio, no "build args"; la UI no tiene esa sección |
