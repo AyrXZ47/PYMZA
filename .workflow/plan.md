@@ -6,16 +6,23 @@
 
 ## Goal
 
-PYMZA v1 en producción (Railway): una PYME real puede registrarse, iniciar
-sesión con auth real (JWT), dar de alta y buscar clientes en la red, evaluar y
-autorizar créditos con planes de pago aislados por empresa (multi-tenant), y
-ver su dashboard — todo contra MongoDB Atlas. Medible: el flujo completo
-registro → login → alta cliente → evaluar → autorizar → dashboard funciona en
-la URL pública con cero datos cruzados entre empresas.
+PYMZA en producción (Railway) y usándose **gratis por empresas reales** en fase
+de testing, contra MongoDB Atlas: registro, login JWT, alta/búsqueda de clientes,
+evaluar/autorizar créditos multi-tenant, cartera, pagos, contrato PDF y
+dashboard. Verificado en vivo 2026-09-29: frontend
+`triumphant-commitment-frontend.up.railway.app`, backend
+`pymza-production-3a22.up.railway.app` (401 sin token; login demo `demo@pymza.mx`
+→ 200 con token).
+
+Ciclo actual (olas 7+): convertir ese MVP en el producto que las empresas
+confíen a diario — cobranza real (abonos, tasas, saldos), tablero que no mienta,
+control por empleado, avisos de novedades — **sin tocar en duro la DB real**:
+todo cambio de esquema es aditivo y con defaults, ninguna migración destructiva.
 
 Lo que NO está en este plan (explícitamente fuera): la app de cobradores
-("uber de cobranza") es un producto móvil separado; se evaluará cuando la red
-de crédito esté viva. Tauri/escritorio: el producto es web primero.
+("uber de cobranza") es un producto móvil separado; Tauri/escritorio: web
+primero. Facturación CFDI: se evalúa como integración con un PAC en la ola 12,
+nunca como ERP propio.
 
 ## Stack & constraints
 
@@ -24,7 +31,7 @@ de crédito esté viva. Tauri/escritorio: el producto es web primero.
 | Frontend | Dioxus 0.7.9 (pin `=0.7.9`) Rust → WASM + Tailwind v4. `frontend/AGENTS.md` es la referencia API obligatoria. `API_BASE` configurable por build (ola 2) |
 | Backend | Axum 0.6 / Tokio. Modularizado: `routes/`, `models/`, `auth.rs`, `otp.rs`, `ocr.rs` |
 | DB | MongoDB Atlas (real) vía `MONGODB_URI`. Colecciones: `empresas`, `clientes`, `planes_pago`, `dashboard_stats`, `verificaciones`, `pagos`, `recibos` |
-| Infra | Docker Compose + Dockerfiles (tesseract en imagen backend); despliegue objetivo: Railway (esta ola, ejecutado por V tras el release gate) |
+| Infra | Docker Compose + Dockerfiles (tesseract en imagen backend). **Producción viva en Railway** (backend + frontend + Atlas); V despliega cada ola con `docs/DEPLOY.md` |
 
 Constraints:
 - Secretos nunca al repo: `MONGODB_URI`, `JWT_SECRET`, credenciales de proveedores (WhatsApp, Stripe, CdC, KYC) solo en `.env` local / variables de Railway.
@@ -32,7 +39,7 @@ Constraints:
 - NixOS: `dx` no compila Tailwind; el CSS compilado está commiteado. Regenerar con `frontend/tailwind.sh` si una ola cambia clases.
 - Sin CI. Verificación: `cargo test` + `cargo check --target wasm32-unknown-unknown`.
 - OCR: binario `tesseract` (Docker: `tesseract-ocr` + `tesseract-ocr-spa`).
-- **Release gate (ESTA ola): `skills/security-audit` con cero CRITICAL/HIGH (o excepciones documentadas con owner) ANTES de desplegar a Railway.**
+- **Release gate (toda ola que se despliegue a producción): `skills/security-audit` con cero CRITICAL/HIGH (o excepciones documentadas con owner) ANTES de desplegar a Railway** — hay empresas reales usándola y la DB es real.
 - Demo real en Atlas: `demo@pymza.mx` / `demo1234`.
 
 ## Waves
@@ -46,14 +53,226 @@ Constraints:
 | 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
 | 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] auditada 2026-09-06 — **REJECTED** (F1/F2 HIGH + S1 Dockerfile) → hotfix en ola 6-fix |
 | 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [x] auditada 2026-09-06 (APPROVED WITH EXCEPTIONS: A6-1 LOW → ola 7) — **release gate CERRADO**: F1/F2 corregidos en vivo, ambas imágenes Docker construyen (tesseract+spa, no-root), índice único verificado. V despliega con `docs/DEPLOY.md` |
-| 7 | Dinero (Stripe) + Ecosistema: roles, verificación CURP oficial (proveedor RENAPO), buró CdC (sandbox), open banking | [ ] |
+| 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [ ] **actual** |
+| 8 | Tablero que dice la verdad: KPIs cobrado/por cobrar/capital, morosidad honesta, filtros por periodo, gráficas corregidas + campanita de novedades ("what's new") | [ ] |
+| 9 | Confianza y control: sub-usuarios por empresa (roles + auditoría de quién hizo qué), aval en alta de cliente, catálogo de productos con ID | [ ] |
+| 10 | Dinero y verificación: Stripe (suscripción), validación de correo de empresa, Verificamex (CURP/teléfono), score real (adiós al 550 fijo) | [ ] |
+| 11 | Documentos y firma: firma digital (pad), contrato firmado por correo, documentos del cliente accesibles a la red con compresión automática | [ ] |
+| 12 | Ecosistema: frontends inversionistas/soporte, buró CdC/FICO, open banking, procesar pagos de deudores vía PYMZA, CFDI/PAC | [ ] |
 
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
 > Actualizar después de cada paso, quien lo ejecute.
 
 ---
 
-## Ola 6 (actual): contrato PDF + producción (release gate)
+## Ola 7 (actual): cobranza real y cartera usable
+
+Contexto: PYMZA ya está en producción usándose por empresas reales. La
+retroalimentación de una de ellas (`PYMZA.md`, sección "Observaciones dadas por
+parte de las empresas que les urge implementar", Sep 28 2026) marca lo que hoy
+hace que la cobranza mienta o estorbe:
+
+1. **Abonos**: hoy `POST /api/creditos/pagos` exige el monto exacto de la cuota y
+   marca la cuota como pagada; no existe el abono parcial ("cada semana le van
+   abonando, pero no marcar la cuota hasta saldar").
+2. **Plan a 1 mes con 7%** y tasas escalonadas coherentes (hoy el mínimo es 3
+   meses y la tabla no admite un 1 mes).
+3. **Saldo y estado por dinero**: hoy `estado` depende de cuotas marcadas y solo
+   se recalcula al registrar un pago (queda rancio en lectura); "Liquidado" no
+   refleja abonos.
+4. **Contrato** que muestre abonos/pagos y selle el plan cuando queda liquidado.
+5. **Cartera usable**: buscador por nombre/ID/CURP, filtros, tabla de activos
+   separada de la de liquidados, y el nombre del cliente (hoy la cartera solo
+   muestra CURP).
+
+División: **executor-1 backend, executor-2 frontend**. El despliegue a Railway lo
+sigue ejecutando V (con `docs/DEPLOY.md`) después de la auditoría.
+
+### Contrato API ola 7 (ambos executors implementan contra ESTO)
+
+**Deuda y saldo (semántica canónica: backend, PDF y frontend usan esta):**
+
+- `deuda = pago_mensual * plazo_meses` (el total con interés que ya usa `top_deudores`).
+- `cobrado = suma de TODOS los pagos y abonos del plan`.
+- `saldo = max(0, deuda - cobrado)` (redondeado a 2 decimales).
+- `cuotas_cubiertas = min(plazo, floor(cobrado / pago_mensual))`.
+- `n_vencidas` = cuotas con `fecha_vencimiento(plan.fecha, n) < hoy`;
+  `cuotas_vencidas = min(plazo, max(0, n_vencidas - cuotas_cubiertas))`.
+- `estado`: `Liquidado` si `saldo <= 0.01`; si no, `Moroso` si
+  `cuotas_vencidas > 0`; si no, `Activo`.
+  Puro y testeado: la función v2 recibe `cobrado` en lugar de la lista de cuotas.
+- **Nada de migración**: `Pago` gana `tipo` (`"cuota"` | `"abono"`) con
+  `#[serde(default)]` → los pagos viejos sin el campo leen como `"cuota"`. Los
+  abonos se guardan con `cuota = 0`. `PlanPago` NO cambia de esquema.
+
+**Endpoints:**
+
+- `POST /api/creditos/abonos` (protegido): body `{plan_id, monto, nota?}`.
+  Validaciones en orden: plan del tenant → 404 (mismo lookup único que
+  `registrar_pago`); `monto` finito y `> 0` → 400; plan ya `Liquidado` → 400;
+  `monto > saldo + 0.01` → 400 ("el abono excede el saldo pendiente"). Inserta
+  `Pago{tipo:"abono", cuota:0}` y devuelve el plan actualizado con la shape de
+  `registrar_pago` (más `saldo`/`cobrado`).
+- `POST /api/creditos/pagos`: path y body intactos (pago de cuota exacta).
+- `GET /api/creditos`: cada plan añade `nombre` (join con `clientes` por `$in` de
+  los CURPs del tenant — UNA query, no N), `cobrado`, `saldo`; `cuotas_pagadas`
+  con la semántica nueva (`cuotas_cubiertas`) y `estado` **recalculado en
+  lectura** (nunca el persistido).
+- `GET /api/creditos/:plan_id/contrato`: mismo path. El PDF incluye una sección de
+  **abonos/pagos registrados** (fecha, tipo, monto), el `cobrado`/`saldo` al
+  momento de emitirse y el sello `LIQUIDADO — FINIQUITO` cuando `saldo <= 0.01`.
+- `GET /api/dashboard`: sin cambios de shape en esta ola (el tablero es ola 8);
+  pero `upsert_dashboard_stats` debe usar el estado recalculado.
+
+**Tasas (propuesta — requiere OK de V, ver reporte):**
+`tasa_por_plazo` pasa a `{1: 0.07, 3: 0.09, 6: 0.12, 9: 0.15, 12: 0.18}` y
+`validar_plazo_y_monto` acepta SOLO esos plazos (400 con mensaje claro si no).
+Los planes ya guardados conservan su `tasa_interes` y su `pago_mensual` (no se
+recalculan).
+
+**Índice (cierra F6 del ledger):** índice único parcial en `pagos` sobre
+`{plan_id, cuota}` con `partialFilterExpression: {cuota: {$gt: 0}}` — cierra la
+carrera de doble pago de cuota sin bloquear los abonos (`cuota: 0`). Se crea en
+`db.rs::connect` igual que el de `empresas.correo` (idempotente, no fatal).
+
+**Frontend:**
+
+- `plan_modal.rs`: opción "1 mes — Tasa 7%" + tasas nuevas en el select.
+- `cartera.rs`:
+  - Buscador único por nombre / CURP / `_id` de plan + filtro por estado y
+    producto (filtrado en memoria: los planes de una PYME son pocos miles).
+  - Dos tablas: **Activos** (Activo + Moroso) y **Liquidados / inactivos** debajo,
+    cada una con su búsqueda/filtro y orden por columna (fecha, monto, saldo).
+  - Columnas nuevas: nombre del cliente, saldo, "X/Y cubiertas".
+  - Botón **Registrar abono** por plan (independiente de "Registrar pago"): form
+    inline con monto (default = saldo, editable) y nota opcional.
+- `api.rs`: `registrar_abono(plan_id, monto, nota, token)` + parsing de
+  `saldo`/`cobrado`.
+- Regenerar `frontend/assets/tailwind.css` con `./tailwind.sh` si hay clases nuevas.
+
+### Mapa de propiedad de archivos (ola 7)
+
+| Archivo/glob | Dueño |
+|-----------|-------|
+| `backend/src/routes/credito.rs`, `backend/src/models/credito.rs`, `backend/src/pdf.rs`, `backend/src/db.rs`, `backend/src/main.rs` (SOLO alta de la ruta `/api/creditos/abonos`), `docs/API.md`, `backend/scripts/**` | executor-1 |
+| `frontend/src/components/cartera.rs`, `frontend/src/components/plan_modal.rs`, `frontend/src/api.rs`, `frontend/assets/tailwind.css`, `frontend/tailwind.css` | executor-2 |
+
+Fuera de ambos (nadie toca): `frontend/src/main.rs`,
+`frontend/src/components/dashboard.rs`, `frontend/src/components/charts.rs`,
+`frontend/src/components/alta_cliente.rs`, `frontend/src/components/sidebar.rs`,
+`backend/src/routes/cliente.rs`, `backend/src/models/cliente.rs`, `.env*`,
+`.workflow/**`, `skills/**`, `PYMZA.md`, `AGENTS.md`, `docs/DEPLOY.md`,
+`docs/ROADMAP.md`, `docs/INVESTIGACION.md`, el resto de servicios de
+`docker-compose.yml`, `Dockerfile.*`.
+
+### Tareas
+
+- [ ] T1 (executor-1): abonos + tasas 1 mes + saldo/estado por dinero + contrato con abonos y liquidación + nombre en cartera + índice parcial → brief `.workflow/briefs/wave7-executor-1.md`
+- [ ] T2 (executor-2): cartera buscador/filtros/dos tablas + botón de abono + plan 1 mes en el modal → brief `.workflow/briefs/wave7-executor-2.md`
+
+### Plan de integración (ola 7)
+
+Merges en orden: **executor-1 (backend) → executor-2 (frontend)**.
+
+```bash
+# 1. Build + tests sobre el árbol integrado
+cd backend && cargo build && cargo test
+cd frontend && cargo check --target wasm32-unknown-unknown && cargo test && ./tailwind.sh
+
+# 2. Humo local (mongod local + seed demo). Sin tocar Atlas.
+cd backend && cargo run
+TOKEN=$(curl -s -X POST http://127.0.0.1:3000/api/login -H 'content-type: application/json' -d '{"correo":"demo@pymza.mx","password":"demo1234"}' | jq -r .token)
+# plan 1 mes → tasa 0.07
+curl -s http://127.0.0.1:3000/api/creditos/evaluar -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"curp":"<curp-seed>","monto":1000,"plazo_meses":1}' | jq '.tasa_interes, .pago_mensual'
+# abono parcial: saldo baja y la cuota NO se marca pagada
+# abono > saldo → 400 · plan ajeno → 404 · plan liquidado → 400 · sin token → 401
+# contrato de plan con abonos: %PDF y sello LIQUIDADO si saldo 0
+```
+
+Integrador actualiza los estados de la tabla de olas tras cada paso.
+
+### Audit gate (ola 7)
+
+- **Release gate: `skills/security-audit` sobre el árbol integrado; cero
+  CRITICAL/HIGH (o excepciones documentadas con owner)** — la ola toca registro
+  de dinero contra una DB real.
+- `cargo test` backend+frontend en verde en el árbol integrado; cero deps nuevas
+  (`git diff Cargo.toml`).
+- Regresión de pagos viejos: un `Pago` sin campo `tipo` cuenta como cuota y el
+  resultado de saldo/estado es idéntico al de hoy.
+- Semántica: deuda D, abono A → `saldo = D−A`; plan cubierto por abonos queda
+  `Liquidado`; cuota vencida sin dinero → `Moroso`.
+- Aislamiento: abono/contrato sobre plan ajeno → 404; sin token → 401.
+- Entradas: `monto <= 0`, `NaN/Inf`, mayor al saldo → 400; plan liquidado → 400.
+- Índice parcial: existe en `pagos`, rechaza cuota duplicada, permite varios abonos.
+- Contrato: header `%PDF`, sección de abonos, sello de liquidado, y la tabla suma
+  `pago_mensual * plazo_meses`.
+- CSS regenerado si hubo clases nuevas.
+- Humo UI en navegador (owner V): buscador, filtros, dos tablas, abono, contrato.
+
+---
+
+## Olas 8-12 (foco, sin detallar — plan rodante)
+
+- **Ola 8 — Tablero que dice la verdad + novedades.** KPIs honestos (cobrado real,
+  por cobrar neto, capital colocado, morosidad sobre dinero y no sobre planes),
+  filtros por periodo (semana / mes / bimestre / trimestre / semestre) y
+  corrección de las 6 gráficas del `resumen`. Incluye la **campanita de novedades**
+  ("what's new"): versión de la app + `GET /api/novedades` que devuelve la última
+  versión y el changelog; si la versión compilada del WASM es menor que la del
+  servidor, el usuario ve "hay una actualización, recarga" y el bell lista los
+  cambios. Techo conocido: solo se anuncia a quien ya trae esta build (o superior).
+- **Ola 9 — Confianza y control interno.** Sub-usuarios por empresa con rol
+  (admin / cajero / cobrador) y credenciales propias, más **auditoría** de quién
+  autorizó un crédito, registró un pago/abono o dio de alta a un cliente (la
+  empresa hoy no sabe qué empleado hizo qué). También: campo de **aval** en el alta
+  de cliente y **catálogo de productos** con ID para reutilizar en el plan de pagos.
+- **Ola 10 — Dinero y verificación real.** Suscripción con Stripe (plan por
+  empresa), validación del correo de empresa, Verificamex para CURP/teléfono
+  (deja de ser heurística) y **score real** de PYMZA (sustituir el 550 fijo por
+  fórmula con historial de la red + recibos).
+- **Ola 11 — Documentos y firma.** Firma digital en pad (pantalla/lápiz) incrustada
+  en el contrato, envío del contrato firmado por correo, y documentos del cliente
+  (INE, recibos, aval) comprimidos automáticamente (<2MB) y accesibles a la red
+  PYMZA desde el perfil del cliente.
+- **Ola 12 — Ecosistema.** Frontend de inversionistas (métricas/consumo), frontend
+  de servicio técnico de PYMZA, buró Círculo de Crédito/FICO (sandbox→producción),
+  open banking, procesar pagos de deudores a través de PYMZA para liquidar en
+  tiempo real, y CFDI vía PAC si una empresa lo exige.
+
+---
+
+## Nota competitiva: Microsip (competidor directo hoy)
+
+Las empresas usuarias ya usan [Microsip](https://www.microsip.com/) — un **ERP**
+mexicano con 40 años, ~100k clientes y 350 partners: SAT/CFDI 4.0, contabilidad,
+bancos, nómina, inventarios, ventas, punto de venta, cuentas por pagar/cobrar,
+Sync-E, administrador de sucursales, CEO móvil, portal de suscripción y soporte
+humano. No competimos de frente: **PYMZA es la red de crédito y cobranza, no el
+ERP de la empresa.**
+
+Paridad que sí bloquea adopción (por eso entra en las olas 8-12, no en todas):
+
+| Lo que una PYME ya espera de Microsip | Respuesta PYMZA | Ola |
+|---|---|---|
+| Roles y permisos por empleado; saber quién hizo cada movimiento | Sub-usuarios con rol + auditoría | 9 |
+| Cuentas por cobrar: estado de cuenta por cliente, antigüedad de saldos, abonos parciales | Ola 7 (abonos/saldo) + ola 8 (aging honesto) + estado de cuenta por cliente en ola 9 | 7-9 |
+| Documentos imprimibles/enviables (estados de cuenta, recibos, contratos) | Contrato PDF ya existe; se actualiza en ola 7 y se firma/emaila en ola 11 | 7, 11 |
+| Reportes/KPIs para decidir (CEO móvil) | Tablero honesto + filtros de periodo | 8 |
+| Suscripción y portal de pago | Stripe | 10 |
+| Soporte y comunidad | Frontend de servicio técnico (SLA de atención) | 12 |
+| Facturación CFDI 4.0 | Integración con PAC (no ERP) | 12 |
+| Punto de venta / Sync-E / en ruta / inventarios | **Fuera** de PYMZA | — |
+
+Diferenciador que Microsip no tiene ni tendrá pronto: **red colaborativa de
+alerta temprana, perfil global reutilizable entre comercios, score para clientes
+sin buró (recibos de servicios) y onboarding por CURP en segundos.** El mensaje de
+venta: "Microsip administra tu empresa; PYMZA te protege de tus clientes."
+
+---
+
+## Ola 6 (histórica): contrato PDF + producción (release gate)
 
 Contexto: la ola 5 quedó APPROVED WITH EXCEPTIONS (E1: archivos >2MB devuelven
 413 por el body-limit de Axum en lugar del 400 del contrato; E2: el fixture
@@ -354,3 +573,16 @@ Ola 6 (nuevas):
 | 2026-09-06 | Ola 6 REJECTED (release gate): F1/F2 HIGH (`plazo_meses` sin validar → OOM ~86GB en evaluar / plan envenenado que congela cartera), Dockerfile.backend no construye (COPY a subdir + rust:1.83 < edition2024), CSS de cartera sin regenerar. Fixs de 3 piezas + re-auditoría puntual; tenant PDF OK, resto del gate en verde | Auditoría en fresco con evidencia en vivo: el humo Docker pendiente era la única red que quedaba y sí atrapó los 2 bugs de build; los límites de entrada de evaluar/autorizar eran un hueco lógico que ningún test cubría |
 | 2026-09-07 | Meta domain verification vía template `frontend/index.html` (dx-nativo; fallback sed en Dockerfile) — micro-tarea single-executor fuera de ola, para destrabar OTP | El shell HTML no existe en repo; el template es el mecanismo oficial de dx. Un archivo, un commit — paralelizar no compra nada |
 | 2026-09-07 | **Producción viva y verificada**: login demo OK en vivo (200+token), CORS OK (`ALLOWED_ORIGINS` manual de V), WASM con `API_BASE=https://pymza-production-3a22…` compilado. Único fix: variable `API_BASE` del servicio frontend de Railway (estaba vacía → build con fallback `127.0.0.1:3000`). La DB nunca fue el problema; Railway NO auto-conecta servicios | `API_BASE` es compile-time (`option_env!`): variable vacía = build inútil, y cambiarla exige re-build. Lección en DEPLOY.md (`e041843`): en Railway es una Variable del servicio, no "build args"; la UI no tiene esa sección |
+
+Olas 7+ (planificación 2026-09-29):
+
+| Fecha | Decisión | Por qué |
+|------|----------|-----|
+| 2026-09-29 | Estado real verificado en vivo por el planner: frontend `triumphant-commitment-frontend.up.railway.app`, backend `pymza-production-3a22.up.railway.app` (`/api/dashboard` sin token → 401; login demo → 200) | El plan parte del estado real, no de memoria; la DB es real y hay que cuidarla |
+| 2026-09-29 | **Re-segmentación olas 7-12**: 7 cobranza real (abonos/tasas/saldo/contrato/cartera), 8 tablero+novedades, 9 roles/aval/productos, 10 dinero/verificación/score, 11 documentos/firma, 12 ecosistema | La retro de empresas reales (`PYMZA.md` Sep 28) prioriza confianza y uso diario; Stripe/buró (ola 7 vieja) pueden esperar a que el uso diario no tenga fricción |
+| 2026-09-29 | Abonos = `Pago.tipo` (`"abono"`, `cuota: 0`) y saldo por **dinero** (`deuda = pago_mensual*plazo`, `saldo = deuda − cobrado`); `estado` se recalcula en lectura | Aditivo: los pagos viejos sin `tipo` leen como cuota y el resultado es idéntico; el estado deja de quedar rancio (hoy solo se recalcula al registrar un pago) |
+| 2026-09-29 | Índice único **parcial** en `pagos{plan_id,cuota}` con `cuota > 0` — cierra F6 del ledger sin bloquear abonos | Solo la cuota duplicada es error contable; los abonos se acumulan legítimamente |
+| 2026-09-29 | Tasas 1/3/6/9/12 = 7/9/12/15/18% — **PENDIENTE OK de V** | Petición textual de la empresa (1 mes al 7%); el resto queda escalonado monotónico. Los planes guardados no se recalculan |
+| 2026-09-29 | La "campanita"/what's new (petición de V) se implementa en ola 8 con `GET /api/novedades` (versión+changelog) y comparación contra la versión compilada; sin websockets ni push | Lo más corto que funciona: poll barato + modal de novedades. Techo: solo anuncia a builds que ya traen la feature |
+| 2026-09-29 | Microsip no se copia como ERP: paridad solo donde bloquea adopción (roles, CxC/abonos, documentos, KPIs, suscripción); moat = red de alerta + score alternativo + onboarding por CURP | Competir como ERP sería suicidio de alcance; el diferencial ya está en el producto |
+| 2026-09-29 | Elevator Pitch de `PYMZA.md` reescrito con la visión completa (red, informalidad, score alternativo, diferenciación vs Microsip, modelo SaaS) | Toda la idea estaba regada en la nota; el pitch era una sola línea |
