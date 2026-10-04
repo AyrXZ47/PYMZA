@@ -124,7 +124,7 @@ sigue ejecutando V (con `docs/DEPLOY.md`) después de la auditoría.
 - `GET /api/dashboard`: sin cambios de shape en esta ola (el tablero es ola 8);
   pero `upsert_dashboard_stats` debe usar el estado recalculado.
 
-**Tasas (propuesta — requiere OK de V, ver reporte):**
+**Tasas (APROBADAS por V 2026-09-29):**
 `tasa_por_plazo` pasa a `{1: 0.07, 3: 0.09, 6: 0.12, 9: 0.15, 12: 0.18}` y
 `validar_plazo_y_monto` acepta SOLO esos plazos (400 con mensaje claro si no).
 Los planes ya guardados conservan su `tasa_interes` y su `pago_mensual` (no se
@@ -169,6 +169,20 @@ Fuera de ambos (nadie toca): `frontend/src/main.rs`,
 
 - [ ] T1 (executor-1): abonos + tasas 1 mes + saldo/estado por dinero + contrato con abonos y liquidación + nombre en cartera + índice parcial → brief `.workflow/briefs/wave7-executor-1.md`
 - [ ] T2 (executor-2): cartera buscador/filtros/dos tablas + botón de abono + plan 1 mes en el modal → brief `.workflow/briefs/wave7-executor-2.md`
+
+### Arranque de la ola 7 (launch kit)
+
+Un executor por brief, en su propio worktree (branch isolation obligatoria). Cada
+uno lee SOLO su brief y el plan; el contexto del planner no se hereda.
+
+```bash
+# Desde main (limpio, con los briefs commiteados):
+git worktree add ../pymza-w7-e1 -b wave7-executor-1 main
+git worktree add ../pymza-w7-e2 -b wave7-executor-2 main
+# En cada worktree: leer .workflow/briefs/wave7-executor-K.md, implementar,
+# verificar, commit + `git push origin wave7-executor-K`. Nunca tocar main.
+# Al terminar: git worktree remove ../pymza-w7-e1  (lo hace el integrador)
+```
 
 ### Plan de integración (ola 7)
 
@@ -223,15 +237,17 @@ Integrador actualiza los estados de la tabla de olas tras cada paso.
   versión y el changelog; si la versión compilada del WASM es menor que la del
   servidor, el usuario ve "hay una actualización, recarga" y el bell lista los
   cambios. Techo conocido: solo se anuncia a quien ya trae esta build (o superior).
-- **Ola 9 — Confianza y control interno.** Sub-usuarios por empresa con rol
-  (admin / cajero / cobrador) y credenciales propias, más **auditoría** de quién
-  autorizó un crédito, registró un pago/abono o dio de alta a un cliente (la
-  empresa hoy no sabe qué empleado hizo qué). También: campo de **aval** en el alta
-  de cliente y **catálogo de productos** con ID para reutilizar en el plan de pagos.
+- **Ola 9 — Confianza y control interno.** Sub-usuarios por empresa con rol fijo
+  (subadmin / cajero / vendedor / cobrador) y credenciales propias, **auditoría**
+  de quién hizo cada acción, **aval** en el alta de cliente, **catálogo de
+  productos** con ID, y **editar/cancelar créditos** de la propia cartera por el
+  admin. Diseño en §"Identidad, roles y edición de cartera (ola 9)".
 - **Ola 10 — Dinero y verificación real.** Suscripción con Stripe (plan por
-  empresa), validación del correo de empresa, Verificamex para CURP/teléfono
-  (deja de ser heurística) y **score real** de PYMZA (sustituir el 550 fijo por
-  fórmula con historial de la red + recibos).
+  empresa, **solo cuando el producto esté pulido**: hoy sigue gratis), validación
+  del correo de empresa, Verificamex para CURP/teléfono (deja de ser heurística) y
+  **score real** de PYMZA (sustituir el 550 fijo por fórmula con historial de la
+  red + recibos). CdC/FICO se integran después (ver §"Score: red primero,
+  buró después").
 - **Ola 11 — Documentos y firma.** Firma digital en pad (pantalla/lápiz) incrustada
   en el contrato, envío del contrato firmado por correo, y documentos del cliente
   (INE, recibos, aval) comprimidos automáticamente (<2MB) y accesibles a la red
@@ -240,6 +256,84 @@ Integrador actualiza los estados de la tabla de olas tras cada paso.
   de servicio técnico de PYMZA, buró Círculo de Crédito/FICO (sandbox→producción),
   open banking, procesar pagos de deudores a través de PYMZA para liquidar en
   tiempo real, y CFDI vía PAC si una empresa lo exige.
+
+---
+
+## Identidad, roles y edición de cartera (diseño para ola 9)
+
+Aprobado por V. Hoy cada empresa tiene UNA cuenta (`empresas`, tenant = correo);
+todos los que conocen la contraseña hacen de todo y no se sabe quién. El objetivo
+no es solo seguridad: es que **la responsabilidad tenga nombre**.
+
+**Modelo propuesto (aditivo, sin migración):**
+
+- Nueva colección `usuarios`: `{_id, empresa (correo), nombre, usuario (handle de
+  login), password_hash (argon2id, el mismo de `auth.rs`), rol, activo,
+  creado_en, creado_por}`. Índice único `(empresa, usuario)` (idempotente en
+  `db.rs`, como el de `empresas.correo`).
+- **Admin raíz = la empresa actual**: `POST /api/login` sigue aceptando
+  `{correo, password}` contra `empresas` → ese token es `rol: "admin"`. Si no
+  coincide, intenta contra `usuarios` por `usuario` (el admin puede usar el correo
+  o un handle corto). JWT nuevo gana claims `uid`, `rol`, `nombre`; `sub` sigue
+  siendo el correo de la empresa (tenant intacto). El extractor `EmpresaSession`
+  expone `correo`, `usuario_id`, `rol`, `nombre`.
+- El admin crea usuarios por **nombre** y elige un **rol predeterminado**; no hay
+  constructor de permisos (menos trabajo y menos errores). Desactivar (`activo:
+  false`) en vez de borrar, para no perder la autoría de lo que hizo.
+
+**Roles fijos (propuesta, matriz aplicada en el BACKEND, no solo en la UI):**
+
+| Acción | admin | subadmin | vendedor | cajero | cobrador |
+|---|---|---|---|---|---|
+| Ver cartera y dashboard | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Alta de cliente (red, por CURP) | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Evaluar / autorizar crédito | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Registrar pago / abono | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Reportar alerta de morosidad | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Editar / cancelar crédito** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Gestionar usuarios y roles | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Ver auditoría del tenant | ✅ | ✅ | ❌ | ❌ | ❌ |
+
+> `subadmin` existe para que el dueño delegue la operación sin dar la cuenta
+> raíz. Si a V le parece de más, se cae y quedan 4 roles.
+
+**Auditoría (quién hizo qué):**
+
+- Campos de autoría (aditivos, los docs viejos leen `None` = "legacy"):
+  `planes_pago.autorizado_por`, `pagos.registrado_por`,
+  `clientes.creado_por`, y `cancelado_por`/`cancelado_motivo` al cancelar.
+- Colección `eventos`: `{empresa, usuario_id, usuario_nombre, rol, accion,
+  entidad, entidad_id, fecha, detalle}` para el panel "Actividad" del admin.
+  Texto libre acotado, nunca datos de la red de otras empresas.
+
+**Editar / cancelar crédito (regla contable, aprobada por V):**
+
+- **Sin pagos registrados**: el admin puede editar (producto, monto, plazo, tasa
+  → se regenera el plan) o borrar. Nada que corromper.
+- **Con pagos registrados**: SOLO cancelar (soft: `estado = "Cancelado"` +
+  motivo + quién). No se reescribe dinero nunca. El plan cancelado baja a la
+  tabla de inactivos y sale de aging/tablero. Para corregir montos ya con pagos:
+  cancelar y autorizar un plan nuevo.
+- **Perfiles de cliente**: NUNCA los edita la empresa; el perfil es de la red y
+  solo PYMZA lo toca (frontend de soporte, ola 12). La empresa solo administra su
+  cartera.
+
+---
+
+## Score: red primero, buró después (aclaración CdC vs FICO)
+
+- **Círculo de Crédito** (y Buró de Crédito) son las **SIC**: las bases de datos
+  que guardan el historial crediticio real. Eso es lo que se contrata como
+  otorgante (por consulta, bajo contrato).
+- **FICO** no es una fuente: es un **modelo de score propietario que se vende a
+  través de las SIC**. No se contrata con FICO; se consume la API del buró y, si
+  el producto lo incluye, viene el score FICO. Su fórmula es cerrada: no se
+  replica; a lo sumo se imita el enfoque (probabilidad de incumplimiento).
+- **PYMZA (aprobado):** construir el score propio primero con la red (historial
+  interno de pagos/abonos y morosidad) + recibos de servicios (heurística ya
+  existente, se formaliza). Cuando haya volumen y entidad jurídica, integrar un
+  buró (sandbox→producción) y opcionalmente su score FICO. Detalle de proveedores
+  y costos en `docs/INVESTIGACION.md`.
 
 ---
 
@@ -586,3 +680,15 @@ Olas 7+ (planificación 2026-09-29):
 | 2026-09-29 | La "campanita"/what's new (petición de V) se implementa en ola 8 con `GET /api/novedades` (versión+changelog) y comparación contra la versión compilada; sin websockets ni push | Lo más corto que funciona: poll barato + modal de novedades. Techo: solo anuncia a builds que ya traen la feature |
 | 2026-09-29 | Microsip no se copia como ERP: paridad solo donde bloquea adopción (roles, CxC/abonos, documentos, KPIs, suscripción); moat = red de alerta + score alternativo + onboarding por CURP | Competir como ERP sería suicidio de alcance; el diferencial ya está en el producto |
 | 2026-09-29 | Elevator Pitch de `PYMZA.md` reescrito con la visión completa (red, informalidad, score alternativo, diferenciación vs Microsip, modelo SaaS) | Toda la idea estaba regada en la nota; el pitch era una sola línea |
+
+Aprobaciones de V (2026-09-29):
+
+| Fecha | Decisión | Por qué |
+|------|----------|-----|
+| 2026-09-29 | **APROBADA** la escalera de tasas 1→7% · 3→9% · 6→12% · 9→15% · 12→18% | El 1 mes al 7% es petición textual de la empresa; el resto escala monotónico |
+| 2026-09-29 | **APROBADO** el orden: ola 7 = cobranza, ola 8 = tablero + novedades | Las gráficas se corrigen bien cuando el saldo ya es por dinero |
+| 2026-09-29 | **APROBADA** la campanita con `GET /api/novedades` + comparación de versión (poll, sin push) | Lo más corto que funciona |
+| 2026-09-29 | **APROBADO** el modelo de roles: el correo de la empresa es el **admin raíz** y este asigna sub-usuarios por nombre con rol *predeterminado* (subadmin/cajero/vendedor/cobrador); la responsabilidad recae en el usuario, no en quien tenga la cuenta. Diseño en §"Identidad, roles y edición de cartera (ola 9)" | Roles fijos = menos trabajo para el admin y auditoría clara |
+| 2026-09-29 | **APROBADO**: el admin de la empresa puede **editar/cancelar créditos de SU cartera** (no los perfiles de cliente, que son de la red y solo PYMZA toca desde soporte). Regla contable: sin pagos → editar/borrar; con pagos → solo cancelar (soft) con motivo, jamás reescribir dinero | Corrige errores de captura sin romper el historial financiero |
+| 2026-09-29 | **APROBADO**: score PRIMERO con la red PYMZA (historial propio + recibos); CdC/FICO se integra después. FICO no es fuente de datos: es un modelo que se vende **a través** de los burós (Círculo de Crédito/Buró de Crédito); se contrata el buró y, si se quiere, su score FICO | La red es el foso; el buró es dato externo de pago por consulta (ver `docs/INVESTIGACION.md`) |
+| 2026-09-29 | **APROBADO**: se mantiene gratis hasta que la DB valga algo y el producto se sienta pulido (Stripe queda en ola 10 pero condicionado a "producto pulido") | Las empresas son las que están llenando la base |
