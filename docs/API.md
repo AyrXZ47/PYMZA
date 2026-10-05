@@ -407,7 +407,7 @@ base64 / cliente-existe igual que en KYC.
 
 ## POST `/api/creditos/evaluar` — protegida
 
-Evalúa un crédito: tasa según plazo (3m=3%, 6m=6%, 9m=10%, 12m=15%, otro=5%), aprueba/rechaza por capacidad de pago y construye el plan de pagos.
+Evalúa un crédito: tasa según plazo (`1m=7%, 3m=9%, 6m=12%, 9m=15%, 12m=18%`), aprueba/rechaza por capacidad de pago y construye el plan de pagos.
 
 **Requiere:** `Authorization: Bearer <token>`
 
@@ -420,18 +420,22 @@ Evalúa un crédito: tasa según plazo (3m=3%, 6m=6%, 9m=10%, 12m=15%, otro=5%),
 }
 ```
 
+`plazo_meses` debe ser **1, 3, 6, 9 o 12**; cualquier otro valor devuelve `400` con
+`"El plazo debe ser 1, 3, 6, 9 o 12 meses"`. `monto` debe ser un número finito
+mayor a 0 (`400` `"El monto debe ser mayor a 0"` en caso contrario).
+
 **Respuesta (éxito):**
 ```json
 {
   "status": "success",
   "estado": "Aprobado",
   "pago_mensual": 1766.67,
-  "tasa_interes": 0.06,
+  "tasa_interes": 0.12,
   "plan_pagos": [
     {
       "mes": 1,
       "pago": 1766.67,
-      "interes": 100.0,
+      "interes": 200.0,
       "capital": 1666.67,
       "saldo_restante": 8333.33
     }
@@ -482,16 +486,16 @@ para registrar pagos (también se expone como `_id` en `GET /api/creditos`).
 { "status": "error", "message": "Error al guardar el plan de pago" }
 ```
 
-**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa`, recalculado desde la cartera real: `creditos_activos` = planes Activo o Moroso, `capital_prestado` = suma de `monto_total` de todos los planes, `proximos_cobros` = cuotas que vencen en ≤30 días de planes no liquidados).
+**Colecciones Mongo:** `planes_pago` (inserta, con `estado` = `"Activo"` y `fecha` del día) y `dashboard_stats` (upsert por `empresa`, recalculado desde la cartera real: `creditos_activos` = planes Activo o Moroso, `capital_prestado` = suma de `monto_total` de todos los planes, `proximos_cobros` = cuotas que vencen en ≤30 días de planes no liquidados). El estado usado es el **recalculado en lectura** (ola 7).
 
 ---
 
 ## POST `/api/creditos/pagos` — protegida
 
-Registra el pago de una cuota de un plan (ola 4). Inserta en `pagos`,
-recalcula el estado del plan (`Activo` → `Moroso` si hay cuota vencida sin
-pagar → `Liquidado` cuando se pagan todas las cuotas) y devuelve el plan
-actualizado con su avance.
+Registra el pago de una cuota de un plan (ola 4). Inserta en `pagos` con
+`tipo: "cuota"`, recalcula el saldo/estado por dinero (ver §"Semántica de saldo
+y estado (ola 7)") y devuelve el plan actualizado con su avance, `cobrado` y
+`saldo`.
 
 **Requiere:** `Authorization: Bearer <token>` — el plan se busca entre los de
 la empresa del token; el tenant sale del token, nunca del body.
@@ -537,16 +541,72 @@ la empresa del token; el tenant sale del token, nunca del body.
     "monto_total": 10600.0,
     "plazo_meses": 6,
     "pago_mensual": 1766.67,
-    "tasa_interes": 0.06,
+    "tasa_interes": 0.12,
     "estado": "Activo",
     "fecha": "2026-07-22",
     "cuotas_pagadas": 1,
-    "cuotas_vencidas": 0
+    "cuotas_vencidas": 0,
+    "cobrado": 1766.67,
+    "saldo": 8833.35
   }
 }
 ```
 
-**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió) y `dashboard_stats` (upsert recalculado).
+**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha, tipo: "cuota" }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió) y `dashboard_stats` (upsert recalculado).
+
+### Semántica de saldo y estado (ola 7)
+
+Todo se calcula por **dinero**, no por cuotas marcadas:
+
+- `deuda = pago_mensual × plazo_meses`.
+- `cobrado` = suma de TODOS los pagos (cuotas) y abonos del plan.
+- `saldo = max(0, deuda − cobrado)` (2 decimales).
+- `cuotas_pagadas` = `min(plazo, floor(cobrado / pago_mensual))` (cuotas cubiertas por dinero).
+- `cuotas_vencidas` = cuotas con vencimiento anterior a hoy, menos las cubiertas por dinero (nunca negativas).
+- `estado`: `Liquidado` si `saldo <= 0.01`; si no, `Moroso` si `cuotas_vencidas > 0`; si no, `Activo`.
+
+`estado`, `cobrado`, `saldo`, `cuotas_pagadas` y `cuotas_vencidas` se **recalculan en lectura**; el `estado` persistido en `planes_pago` es solo caché. Los pagos guardados antes de esta ola (sin `tipo`) se leen como `"cuota"`, así que el saldo/estado de los planes viejos no cambia.
+
+---
+
+## POST `/api/creditos/abonos` — protegida
+
+Ola 7 — registra un **abono parcial** (pago a cuenta) que baja el saldo **sin marcar ninguna cuota como pagada**. Es la vía para "cada semana le abonan, pero no se marca la cuota hasta saldar".
+
+**Requiere:** `Authorization: Bearer <token>` — el plan se busca entre los de la empresa del token; el tenant sale del token, nunca del body.
+
+**Payload:**
+```json
+{
+  "plan_id": "66c9f2e4a1b2c3d4e5f60718",
+  "monto": 500.0,
+  "nota": "abono semanal"
+}
+```
+
+`nota` es opcional.
+
+**Validaciones (en orden):**
+1. El plan existe y pertenece a la empresa del token → si no, `404`
+   ```json
+   { "status": "error", "message": "Plan no encontrado" }
+   ```
+2. `monto` finito y `> 0` → si no, `400`
+   ```json
+   { "status": "error", "message": "El monto debe ser mayor a 0" }
+   ```
+3. El plan no está liquidado → si ya lo está, `400`
+   ```json
+   { "status": "error", "message": "El plan ya está liquidado" }
+   ```
+4. `monto <= saldo + 0.01` → si no, `400`
+   ```json
+   { "status": "error", "message": "El abono excede el saldo pendiente" }
+   ```
+
+**Respuesta (éxito):** la misma shape que `POST /api/creditos/pagos` (el plan con `cobrado`/`saldo` recalculados y el `estado` sin cambios si aún hay saldo).
+
+**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota: 0, monto, fecha, tipo: "abono", nota? }`), `planes_pago` (actualiza `estado` si quedó liquidado) y `dashboard_stats` (upsert recalculado).
 
 ---
 
@@ -565,26 +625,33 @@ Lista los créditos (planes de pago) activos de la empresa autenticada.
       "_id": "66c9f2e4a1b2c3d4e5f60718",
       "empresa": "demo@pymza.mx",
       "cliente_curp": "GARM980412HDFNRL08",
+      "nombre": "María García Rodríguez",
       "producto": "Crédito comercial",
       "monto_total": 10600.0,
       "plazo_meses": 6,
       "pago_mensual": 1766.67,
-      "tasa_interes": 0.06,
+      "tasa_interes": 0.12,
       "estado": "Activo",
       "fecha": "2026-07-22",
-      "cuotas_pagadas": 2,
-      "cuotas_vencidas": 0
+      "cuotas_pagadas": 1,
+      "cuotas_vencidas": 0,
+      "cobrado": 1766.67,
+      "saldo": 8833.35
     }
   ]
 }
 ```
 
-Ola 4: cada crédito expone `_id` (hex, para registrar pagos) y el avance
-calculado en servidor — `cuotas_pagadas` (pagos registrados del plan) y
-`cuotas_vencidas` (cuotas con vencimiento anterior a hoy sin pago). Estos dos
-campos se calculan, no se persisten.
+Ola 4: cada crédito expone `_id` (hex, para registrar pagos). Ola 7 añade:
 
-**Colección Mongo:** `planes_pago` y `pagos` (leídos por `empresa` para calcular el avance).
+- `nombre` — nombre completo del cliente, resuelto con **una sola** consulta
+  `clientes.find({curp: {$in: [...]}})` (si el cliente ya no está en la red, el
+  CURP hace de nombre).
+- `cobrado` / `saldo` y `cuotas_pagadas` / `cuotas_vencidas` con la semántica por
+  dinero de §"Semántica de saldo y estado (ola 7)".
+- `estado` **recalculado en lectura** (nunca el persistido).
+
+**Colección Mongo:** `planes_pago` y `pagos` (leídos por `empresa` para calcular el avance) y `clientes` (un `$in` por los CURPs del tenant para `nombre`).
 
 ---
 
@@ -596,6 +663,10 @@ regenera bajo demanda desde datos vivos (nunca se almacena). Contenido: título
 del cliente (nombre, CURP), datos del crédito (producto, monto, plazo, tasa,
 pago mensual), la **tabla completa de pagos** (mes, pago, interés, capital,
 saldo — misma fórmula de `evaluar`), línea de firma y leyenda.
+
+Ola 7 añade al PDF una sección de **pagos y abonos registrados** (fecha, tipo,
+monto), el `cobrado`/`saldo` al momento de emitirse y el sello
+**`LIQUIDADO — FINIQUITO`** cuando `saldo <= 0.01`.
 
 **Requiere:** `Authorization: Bearer <token>` — solo planes del tenant del
 token; el plan ajeno no aparece con el filtro por empresa.

@@ -29,6 +29,13 @@ pub async fn connect() -> Result<Client, Box<dyn std::error::Error>> {
     if let Err(e) = crear_indice_unico_empresa_correo(&client).await {
         eprintln!("⚠️ No se pudo crear el índice único de empresas.correo: {e}");
     }
+    // Ola 7 (cierra F6): índice único PARCIAL en `pagos{plan_id, cuota}` con
+    // `cuota > 0` — impide la carrera de doble pago de una cuota sin bloquear
+    // los abonos (`cuota: 0`, que se acumulan legítimamente). Idempotente; si
+    // falla, el backend arranca igual y se reintenta en el próximo arranque.
+    if let Err(e) = crear_indice_unico_pago_cuota(&client).await {
+        eprintln!("⚠️ No se pudo crear el índice único de pagos(plan_id, cuota): {e}");
+    }
     println!("--- Pool de conexiones MongoDB inicializado ---");
     Ok(client)
 }
@@ -60,6 +67,25 @@ async fn crear_indice_unico_empresa_correo(client: &Client) -> Result<(), mongod
     let index = IndexModel::builder()
         .keys(doc! { "correo": 1 })
         .options(IndexOptions::builder().unique(true).build())
+        .build();
+    coll.create_index(index, None).await.map(|_| ())
+}
+
+/// Índice único PARCIAL sobre `pagos{plan_id, cuota}` (ola 7): solo aplica a
+/// `cuota > 0`, así una cuota no puede pagarse dos veces (carrera F6) mientras
+/// los abonos (`cuota: 0`) pueden repetirse cuantas veces haga falta.
+async fn crear_indice_unico_pago_cuota(client: &Client) -> Result<(), mongodb::error::Error> {
+    let coll = client
+        .database("pymza")
+        .collection::<mongodb::bson::Document>("pagos");
+    let index = IndexModel::builder()
+        .keys(doc! { "plan_id": 1, "cuota": 1 })
+        .options(
+            IndexOptions::builder()
+                .unique(true)
+                .partial_filter_expression(doc! { "cuota": { "$gt": 0 } })
+                .build(),
+        )
         .build();
     coll.create_index(index, None).await.map(|_| ())
 }

@@ -14,17 +14,21 @@ use mongodb::bson::{doc, oid::ObjectId};
 use crate::auth::EmpresaSession;
 use crate::models::cliente::Cliente;
 use crate::models::credito::{
-    AutorizarReq, DashboardStats, EvaluarReq, EvaluarRes, Pago, PagoInfo, PlanPago, RegistrarPagoReq,
+    AutorizarReq, DashboardStats, EvaluarReq, EvaluarRes, Pago, PagoInfo, PlanPago,
+    RegistrarAbonoReq, RegistrarPagoReq,
 };
 use crate::models::empresa::Empresa;
 use crate::pdf::pdf_contrato;
 
 fn tasa_por_plazo(meses: i32) -> f64 {
     match meses {
-        3 => 0.03,
-        6 => 0.06,
-        9 => 0.10,
-        12 => 0.15,
+        1 => 0.07,
+        3 => 0.09,
+        6 => 0.12,
+        9 => 0.15,
+        12 => 0.18,
+        // Inalcanzable vía endpoints: `validar_plazo_y_monto` filtra los plazos
+        // válidos antes de llamar a esta función.
         _ => 0.05,
     }
 }
@@ -61,27 +65,60 @@ pub(crate) fn fecha_vencimiento(fecha_plan: &str, n: i32) -> Option<NaiveDate> {
     d.checked_add_months(Months::new(n as u32))
 }
 
-/// Estado tras cada pago: Liquidado (todas las cuotas pagadas), Moroso
-/// (≥1 cuota vencida sin pagar: vencimiento < hoy), Activo (resto).
-pub(crate) fn estado_plan(plan: &PlanPago, cuotas_pagadas: &[i32], hoy: NaiveDate) -> &'static str {
-    if cuotas_pagadas.len() as i32 >= plan.plazo_meses {
-        return "Liquidado";
-    }
-    let vencida_sin_pago = (1..=plan.plazo_meses).any(|n| {
-        !cuotas_pagadas.contains(&n)
-            && fecha_vencimiento(&plan.fecha, n).map_or(false, |v| v < hoy)
-    });
-    if vencida_sin_pago { "Moroso" } else { "Activo" }
+// --- Saldo y estado por DINERO (ola 7): funciones PURAS, testeadas sin DB ---
+
+/// Deuda total del plan = pago_mensual × plazo (el mismo total con interés
+/// que ya usa `top_deudores`).
+pub(crate) fn deuda(plan: &PlanPago) -> f64 {
+    plan.pago_mensual * plan.plazo_meses as f64
 }
 
-/// Cuotas vencidas sin pagar (vencimiento < hoy), ≥ 0.
-pub(crate) fn cuotas_vencidas(plan: &PlanPago, cuotas_pagadas: &[i32], hoy: NaiveDate) -> i32 {
-    (1..=plan.plazo_meses)
-        .filter(|n| {
-            !cuotas_pagadas.contains(n)
-                && fecha_vencimiento(&plan.fecha, *n).map_or(false, |v| v < hoy)
-        })
-        .count() as i32
+/// Saldo pendiente = max(0, deuda − cobrado), a 2 decimales. `cobrado` es la
+/// suma de TODOS los pagos y abonos del plan.
+pub(crate) fn saldo(plan: &PlanPago, cobrado: f64) -> f64 {
+    redondear2((deuda(plan) - cobrado).max(0.0))
+}
+
+/// Cuotas cubiertas por dinero = min(plazo, floor(cobrado / pago_mensual)).
+/// El epsilon evita que pagar exacto la última cuota caiga a n−1 por error de
+/// punto flotante.
+pub(crate) fn cuotas_cubiertas(plan: &PlanPago, cobrado: f64) -> i32 {
+    if plan.pago_mensual <= 0.0 {
+        return 0;
+    }
+    let n = (cobrado / plan.pago_mensual + 1e-9).floor() as i32;
+    n.clamp(0, plan.plazo_meses)
+}
+
+/// Cuotas vencidas (vencimiento < hoy) no cubiertas por dinero:
+/// min(plazo, max(0, n_vencidas − cuotas_cubiertas)).
+pub(crate) fn cuotas_vencidas(plan: &PlanPago, cobrado: f64, hoy: NaiveDate) -> i32 {
+    let vencidas = (1..=plan.plazo_meses)
+        .filter(|n| fecha_vencimiento(&plan.fecha, *n).map_or(false, |v| v < hoy))
+        .count() as i32;
+    (vencidas - cuotas_cubiertas(plan, cobrado)).clamp(0, plan.plazo_meses)
+}
+
+/// Estado v2 (ola 7), por dinero y no por cuotas marcadas: Liquidado si
+/// saldo ≤ 0.01; si no, Moroso con ≥1 cuota vencida sin cubrir; si no, Activo.
+pub(crate) fn estado_plan(plan: &PlanPago, cobrado: f64, hoy: NaiveDate) -> &'static str {
+    if saldo(plan, cobrado) <= 0.01 {
+        return "Liquidado";
+    }
+    if cuotas_vencidas(plan, cobrado, hoy) > 0 {
+        "Moroso"
+    } else {
+        "Activo"
+    }
+}
+
+/// `cobrado` de un plan = total de sus pagos/abonos en el mapa del tenant.
+fn cobrado_de(plan: &PlanPago, pagos_por_plan: &HashMap<String, PagosPlan>) -> f64 {
+    plan.id
+        .as_ref()
+        .and_then(|id| pagos_por_plan.get(&id.to_hex()))
+        .map(|pp| pp.total)
+        .unwrap_or(0.0)
 }
 
 /// Cuotas de un plan que vencen dentro de `dias` días (hoy incluido) sin pago.
@@ -95,17 +132,21 @@ pub(crate) fn cuotas_por_vencer(plan: &PlanPago, cuotas_pagadas: &[i32], hoy: Na
         .count() as i32
 }
 
-/// Plan serializado para la API: `_id` hex + avance calculado (cuotas_pagadas
-/// y cuotas_vencidas), nunca persistido.
-fn plan_json(plan: &PlanPago, cuotas_pagadas: i32, cuotas_vencidas: i32) -> serde_json::Value {
+/// Plan serializado para la API: `_id` hex + avance y estado recalculados en
+/// lectura (cuotas cubiertas por dinero, cuotas vencidas, cobrado y saldo),
+/// nunca persistidos. El `estado` persistido se sobrescribe con el v2.
+fn plan_json(plan: &PlanPago, cobrado: f64, hoy: NaiveDate) -> serde_json::Value {
     let mut v = serde_json::to_value(plan).unwrap_or_else(|_| serde_json::json!({}));
     // ObjectId serializa como {"$oid": hex} con serde_json; el contrato pide
     // el hex string plano (el frontend lo manda tal cual al registrar pagos).
     if let Some(id) = &plan.id {
         v["_id"] = serde_json::json!(id.to_hex());
     }
-    v["cuotas_pagadas"] = serde_json::json!(cuotas_pagadas);
-    v["cuotas_vencidas"] = serde_json::json!(cuotas_vencidas);
+    v["estado"] = serde_json::json!(estado_plan(plan, cobrado, hoy));
+    v["cuotas_pagadas"] = serde_json::json!(cuotas_cubiertas(plan, cobrado));
+    v["cuotas_vencidas"] = serde_json::json!(cuotas_vencidas(plan, cobrado, hoy));
+    v["cobrado"] = serde_json::json!(redondear2(cobrado));
+    v["saldo"] = serde_json::json!(saldo(plan, cobrado));
     v
 }
 
@@ -171,14 +212,19 @@ async fn upsert_dashboard_stats(
     pagos_por_plan: &HashMap<String, PagosPlan>,
 ) {
     let hoy = Utc::now().date_naive();
+    // Estado RECALCULADO (ola 7): un plan cubierto por abonos cuenta como
+    // Liquidado aunque el campo persistido aún diga Activo.
     let creditos_activos = planes
         .iter()
-        .filter(|p| p.estado == "Activo" || p.estado == "Moroso")
+        .filter(|p| {
+            let e = estado_plan(p, cobrado_de(p, pagos_por_plan), hoy);
+            e == "Activo" || e == "Moroso"
+        })
         .count() as i32;
     let capital_prestado: f64 = planes.iter().map(|p| p.monto_total).sum();
     let proximos_cobros: i32 = planes
         .iter()
-        .filter(|p| p.estado != "Liquidado")
+        .filter(|p| estado_plan(p, cobrado_de(p, pagos_por_plan), hoy) != "Liquidado")
         .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, 30))
         .sum();
 
@@ -204,13 +250,14 @@ fn error_status(status: StatusCode, message: &str) -> (StatusCode, Json<serde_js
     (status, Json(serde_json::json!({ "status": "error", "message": message })))
 }
 
-/// Contrato del dominio (F1/F2, auditoría ola 6): plazo 3..=12 meses y monto
-/// positivo finito. Sin esto, `generar_plan_pagos` materializa un Vec de
-/// `plazo_meses` elementos (i32::MAX → ~86 GB → OOM con 1 request) y
-/// `autorizar` persiste el plan envenenado. Devuelve el mensaje del 400.
+/// Contrato del dominio (F1/F2, auditoría ola 6; plazos ola 7): el plazo debe
+/// ser 1, 3, 6, 9 o 12 meses y el monto positivo finito. Sin esto,
+/// `generar_plan_pagos` materializa un Vec de `plazo_meses` elementos
+/// (i32::MAX → ~86 GB → OOM con 1 request) y `autorizar` persiste el plan
+/// envenenado. Devuelve el mensaje del 400.
 fn validar_plazo_y_monto(plazo_meses: i32, monto: f64) -> Option<&'static str> {
-    if !(3..=12).contains(&plazo_meses) {
-        return Some("El plazo debe estar entre 3 y 12 meses");
+    if !matches!(plazo_meses, 1 | 3 | 6 | 9 | 12) {
+        return Some("El plazo debe ser 1, 3, 6, 9 o 12 meses");
     }
     if !monto.is_finite() || monto <= 0.0 {
         return Some("El monto debe ser mayor a 0");
@@ -565,11 +612,42 @@ pub async fn obtener_creditos(
         }
     };
     let hoy = Utc::now().date_naive();
+
+    // Join con `clientes` en UNA query: `$in` sobre los CURPs del tenant (no
+    // N lookups). Si el cliente ya no está en la red, el CURP hace de nombre.
+    let mut curps: Vec<String> = planes.iter().map(|p| p.cliente_curp.clone()).collect();
+    curps.sort();
+    curps.dedup();
+    let mut nombres: HashMap<String, String> = HashMap::new();
+    if !curps.is_empty() {
+        let coll_clientes = client.database("pymza").collection::<Cliente>("clientes");
+        match coll_clientes.find(doc! { "curp": { "$in": &curps } }, None).await {
+            Ok(mut cursor) => {
+                while let Some(cliente) = cursor.next().await {
+                    match cliente {
+                        Ok(c) => {
+                            nombres.insert(c.curp, c.nombre_completo);
+                        }
+                        Err(e) => eprintln!("🚨 ERROR MONGODB (clientes): {:?}", e),
+                    }
+                }
+            }
+            Err(e) => eprintln!("🚨 ERROR MONGODB (clientes): {:?}", e),
+        }
+    }
+
     let creditos: Vec<serde_json::Value> = planes
         .iter()
         .map(|plan| {
-            let pagadas = pagadas_de(plan, &pagos_por_plan);
-            plan_json(plan, pagadas.len() as i32, cuotas_vencidas(plan, &pagadas, hoy))
+            let cobrado = cobrado_de(plan, &pagos_por_plan);
+            let mut v = plan_json(plan, cobrado, hoy);
+            v["nombre"] = serde_json::json!(
+                nombres
+                    .get(&plan.cliente_curp)
+                    .cloned()
+                    .unwrap_or_else(|| plan.cliente_curp.clone())
+            );
+            v
         })
         .collect();
     Json(serde_json::json!({ "status": "success", "creditos": creditos }))
@@ -607,7 +685,7 @@ pub async fn registrar_pago(
             &format!("Cuota fuera de rango: debe estar entre 1 y {}", plan.plazo_meses),
         ));
     }
-    let mut cuotas = pagos_por_plan
+    let cuotas = pagos_por_plan
         .get(&plan_hex)
         .map(|pp| pp.cuotas.clone())
         .unwrap_or_default();
@@ -628,16 +706,19 @@ pub async fn registrar_pago(
         cuota: payload.cuota,
         monto: payload.monto,
         fecha: Utc::now().format("%Y-%m-%d").to_string(),
+        tipo: "cuota".to_string(),
+        nota: None,
     };
     if let Err(e) = client.database("pymza").collection::<Pago>("pagos").insert_one(pago, None).await {
         eprintln!("🚨 ERROR AL GUARDAR PAGO: {:?}", e);
         return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error al registrar el pago"));
     }
-    cuotas.push(payload.cuota);
 
-    // Recalcula el estado del plan y persiste solo si cambió.
+    // `cobrado` incluye el pago recién insertado; el estado se recalcula por
+    // dinero (ola 7) y se persiste solo si cambió.
     let hoy = Utc::now().date_naive();
-    let estado_nuevo = estado_plan(&plan, &cuotas, hoy);
+    let cobrado_nuevo = cobrado_de(&plan, &pagos_por_plan) + payload.monto;
+    let estado_nuevo = estado_plan(&plan, cobrado_nuevo, hoy);
     if estado_nuevo != plan.estado {
         planes[idx].estado = estado_nuevo.to_string();
         if let Some(oid) = plan.id {
@@ -659,11 +740,87 @@ pub async fn registrar_pago(
 
     Ok(Json(serde_json::json!({
         "status": "success",
-        "plan": plan_json(
-            &planes[idx],
-            cuotas.len() as i32,
-            cuotas_vencidas(&planes[idx], &cuotas, hoy),
-        ),
+        "plan": plan_json(&planes[idx], cobrado_nuevo, hoy),
+    })))
+}
+
+/// Registra un abono parcial (ola 7): baja el saldo SIN marcar la cuota como
+/// pagada. Validaciones en orden: plan del tenant (404); `monto` finito > 0
+/// (400); plan ya Liquidado (400); `monto > saldo + 0.01` (400). Inserta
+/// `Pago{tipo:"abono", cuota:0}` y devuelve el plan con saldo/cobrado.
+pub async fn registrar_abono(
+    State(client): State<mongodb::Client>,
+    sesion: EmpresaSession,
+    Json(payload): Json<RegistrarAbonoReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // cargar_cartera solo trae planes del tenant: un plan_id ajeno o inválido
+    // no aparece en la lista → 404 único para "no existe" y "no es tuyo".
+    let (mut planes, mut pagos_por_plan) = match cargar_cartera(&client, &sesion.correo).await {
+        Ok(cartera) => cartera,
+        Err(e) => {
+            eprintln!("🚨 ERROR MONGODB: {:?}", e);
+            return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error interno"));
+        }
+    };
+    let Some(idx) = planes.iter().position(|p| {
+        p.id.as_ref().map_or(false, |id| id.to_hex() == payload.plan_id)
+    }) else {
+        return Err(error_status(StatusCode::NOT_FOUND, "Plan no encontrado"));
+    };
+    let plan = planes[idx].clone();
+    let plan_hex = plan.id.as_ref().map(|id| id.to_hex()).unwrap_or_default();
+
+    if !payload.monto.is_finite() || payload.monto <= 0.0 {
+        return Err(error_status(StatusCode::BAD_REQUEST, "El monto debe ser mayor a 0"));
+    }
+    let cobrado_previo = cobrado_de(&plan, &pagos_por_plan);
+    let saldo_actual = saldo(&plan, cobrado_previo);
+    if saldo_actual <= 0.01 {
+        return Err(error_status(StatusCode::BAD_REQUEST, "El plan ya está liquidado"));
+    }
+    if payload.monto > saldo_actual + 0.01 {
+        return Err(error_status(StatusCode::BAD_REQUEST, "El abono excede el saldo pendiente"));
+    }
+
+    let pago = Pago {
+        plan_id: plan.id.clone().unwrap_or_default(),
+        empresa: sesion.correo.clone(),
+        cliente_curp: plan.cliente_curp.clone(),
+        cuota: 0,
+        monto: payload.monto,
+        fecha: Utc::now().format("%Y-%m-%d").to_string(),
+        tipo: "abono".to_string(),
+        nota: payload.nota.clone(),
+    };
+    if let Err(e) = client.database("pymza").collection::<Pago>("pagos").insert_one(pago, None).await {
+        eprintln!("🚨 ERROR AL GUARDAR ABONO: {:?}", e);
+        return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error al registrar el abono"));
+    }
+
+    let hoy = Utc::now().date_naive();
+    let cobrado_nuevo = cobrado_previo + payload.monto;
+    let estado_nuevo = estado_plan(&plan, cobrado_nuevo, hoy);
+    if estado_nuevo != plan.estado {
+        planes[idx].estado = estado_nuevo.to_string();
+        if let Some(oid) = plan.id {
+            if let Err(e) = client
+                .database("pymza")
+                .collection::<PlanPago>("planes_pago")
+                .update_one(doc! { "_id": oid }, doc! { "$set": { "estado": estado_nuevo } }, None)
+                .await
+            {
+                eprintln!("🚨 ERROR AL ACTUALIZAR ESTADO DEL PLAN: {:?}", e);
+            }
+        }
+    }
+
+    let entrada = pagos_por_plan.entry(plan_hex).or_default();
+    entrada.total += payload.monto;
+    upsert_dashboard_stats(&client, &sesion.correo, &planes, &pagos_por_plan).await;
+
+    Ok(Json(serde_json::json!({
+        "status": "success",
+        "plan": plan_json(&planes[idx], cobrado_nuevo, hoy),
     })))
 }
 
@@ -737,12 +894,30 @@ pub async fn descargar_contrato(
         .map(|c| c.nombre_completo)
         .unwrap_or_else(|| plan.cliente_curp.clone());
 
+    // Ola 7: pagos/abonos del plan (filtrados por tenant) para la sección del
+    // contrato; el cobrado/saldo de emisión sale de la misma suma.
+    let mut cursor = db
+        .collection::<Pago>("pagos")
+        .find(doc! { "plan_id": oid, "empresa": &sesion.correo }, None)
+        .await
+        .map_err(error_db)?;
+    let mut pagos = Vec::new();
+    while let Some(pago) = cursor.next().await {
+        pagos.push(pago.map_err(error_db)?);
+    }
+    pagos.sort_by(|a, b| a.fecha.cmp(&b.fecha));
+    let cobrado: f64 = pagos.iter().map(|p| p.monto).sum();
+    let saldo_actual = saldo(&plan, cobrado);
+
     let pdf = pdf_contrato(
         &nombre_empresa,
         &sesion.correo,
         &nombre_cliente,
         &plan.cliente_curp,
         &plan,
+        &pagos,
+        redondear2(cobrado),
+        saldo_actual,
         &Utc::now().format("%Y-%m-%d").to_string(),
     );
 
@@ -769,10 +944,12 @@ mod tests {
 
     #[test]
     fn tasa_por_plazo_devuelve_la_tasa_esperada() {
-        assert_eq!(tasa_por_plazo(3), 0.03);
-        assert_eq!(tasa_por_plazo(6), 0.06);
-        assert_eq!(tasa_por_plazo(9), 0.10);
-        assert_eq!(tasa_por_plazo(12), 0.15);
+        assert_eq!(tasa_por_plazo(1), 0.07);
+        assert_eq!(tasa_por_plazo(3), 0.09);
+        assert_eq!(tasa_por_plazo(6), 0.12);
+        assert_eq!(tasa_por_plazo(9), 0.15);
+        assert_eq!(tasa_por_plazo(12), 0.18);
+        // fuera del contrato: inalcanzable vía endpoints (validar filtra antes)
         assert_eq!(tasa_por_plazo(4), 0.05);
     }
 
@@ -855,10 +1032,10 @@ mod tests {
         let mut plan = plan_ejemplo();
         plan.fecha = "2026-06-01".into();
         let hoy = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
-        // cuota 1 pagada; cuota 2 vence 2026-08-01 (futuro)
-        assert_eq!(estado_plan(&plan, &[1], hoy), "Activo");
+        // cuota 1 cubierta por dinero; cuota 2 vence 2026-08-01 (futuro)
+        assert_eq!(estado_plan(&plan, plan.pago_mensual, hoy), "Activo");
         // el día del vencimiento aún NO es moroso (vencimiento < hoy estricto)
-        assert_eq!(estado_plan(&plan, &[], hoy), "Activo");
+        assert_eq!(estado_plan(&plan, 0.0, hoy), "Activo");
     }
 
     #[test]
@@ -866,19 +1043,58 @@ mod tests {
         let plan = plan_ejemplo(); // fecha 2026-01-01, plazo 6
         let hoy = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
         // cuota 1 venció 2026-02-01 y cuota 2 el 2026-03-01
-        assert_eq!(estado_plan(&plan, &[], hoy), "Moroso");
-        assert_eq!(cuotas_vencidas(&plan, &[], hoy), 2);
-        // pagando la cuota 1 sigue moroso por la cuota 2
-        assert_eq!(estado_plan(&plan, &[1], hoy), "Moroso");
-        assert_eq!(cuotas_vencidas(&plan, &[1], hoy), 1);
+        assert_eq!(estado_plan(&plan, 0.0, hoy), "Moroso");
+        assert_eq!(cuotas_vencidas(&plan, 0.0, hoy), 2);
+        // un pago cubre la cuota más antigua: sigue moroso por la segunda
+        assert_eq!(estado_plan(&plan, plan.pago_mensual, hoy), "Moroso");
+        assert_eq!(cuotas_vencidas(&plan, plan.pago_mensual, hoy), 1);
+        // dos pagos cubren ambas vencidas → Activo (queda saldo por delante)
+        assert_eq!(estado_plan(&plan, plan.pago_mensual * 2.0, hoy), "Activo");
+        assert_eq!(cuotas_vencidas(&plan, plan.pago_mensual * 2.0, hoy), 0);
     }
 
     #[test]
     fn estado_plan_todo_pagado_es_liquidado() {
         let plan = plan_ejemplo();
         let hoy = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
-        assert_eq!(estado_plan(&plan, &[1, 2, 3, 4, 5, 6], hoy), "Liquidado");
-        assert_eq!(cuotas_vencidas(&plan, &[1, 2, 3, 4, 5, 6], hoy), 0);
+        let total = deuda(&plan);
+        assert_eq!(estado_plan(&plan, total, hoy), "Liquidado");
+        assert_eq!(cuotas_vencidas(&plan, total, hoy), 0);
+        assert_eq!(saldo(&plan, total), 0.0);
+    }
+
+    #[test]
+    fn saldo_es_deuda_menos_cobrado_y_nunca_negativo() {
+        let plan = plan_ejemplo();
+        let total = deuda(&plan);
+        assert_eq!(saldo(&plan, 0.0), redondear2(total));
+        assert_eq!(saldo(&plan, 500.0), redondear2(total - 500.0));
+        // cobrar de más no deja saldo negativo
+        assert_eq!(saldo(&plan, total + 999.0), 0.0);
+    }
+
+    #[test]
+    fn cuotas_cubiertas_por_dinero_incluye_abonos() {
+        let plan = plan_ejemplo(); // pago_mensual 1766.67, plazo 6
+        assert_eq!(cuotas_cubiertas(&plan, 0.0), 0);
+        // un abono parcial de media cuota no cubre ninguna
+        assert_eq!(cuotas_cubiertas(&plan, plan.pago_mensual / 2.0), 0);
+        // pago exacto + abono: dos cuotas cubiertas
+        assert_eq!(cuotas_cubiertas(&plan, plan.pago_mensual * 2.0 + 100.0), 2);
+        // nunca más que el plazo
+        assert_eq!(cuotas_cubiertas(&plan, deuda(&plan) * 2.0), plan.plazo_meses);
+    }
+
+    #[test]
+    fn estado_plan_abonos_parciales_no_marcan_cuota() {
+        // Un plan se liquida SOLO con abonos: no hay cuota marcada y aun así
+        // debe quedar Liquidado por dinero (ola 7).
+        let plan = plan_ejemplo();
+        let hoy = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        let total = deuda(&plan);
+        // un abono menor a una cuota no cubre las vencidas → sigue Moroso
+        assert_eq!(estado_plan(&plan, plan.pago_mensual * 0.5, hoy), "Moroso");
+        assert_eq!(estado_plan(&plan, total, hoy), "Liquidado");
     }
 
     #[test]
@@ -895,14 +1111,28 @@ mod tests {
     }
 
     #[test]
-    fn plan_json_expone_id_y_avance() {
+    fn plan_json_expone_id_avance_y_saldo() {
         let mut plan = plan_ejemplo();
         plan.id = ObjectId::parse_str("507f1f77bcf86cd799439011").ok();
-        let v = plan_json(&plan, 2, 1);
+        let hoy = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        let cobrado = plan.pago_mensual * 2.0;
+        let v = plan_json(&plan, cobrado, hoy);
         assert_eq!(v["_id"], "507f1f77bcf86cd799439011");
         assert_eq!(v["cuotas_pagadas"], 2);
-        assert_eq!(v["cuotas_vencidas"], 1);
+        assert_eq!(v["cuotas_vencidas"], 0);
         assert_eq!(v["estado"], "Activo");
+        assert_eq!(v["cobrado"], redondear2(cobrado));
+        assert_eq!(v["saldo"], saldo(&plan, cobrado));
+    }
+
+    #[test]
+    fn plan_json_recalcula_el_estado_persistido_rancio() {
+        let mut plan = plan_ejemplo();
+        plan.estado = "Liquidado".into(); // valor rancio persistido
+        let hoy = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        let v = plan_json(&plan, 0.0, hoy);
+        assert_eq!(v["estado"], "Moroso", "el estado se recalcula en lectura");
+        assert_eq!(v["saldo"], redondear2(deuda(&plan)));
     }
 
     #[test]
@@ -1049,17 +1279,17 @@ mod tests {
         assert_eq!(r["tasa_morosidad"], 0.5, "1 moroso / 2 no liquidados");
     }
 
-    // --- F1/F2 (auditoría ola 6): plazo 3..=12 y monto > 0 finito ---
+    // --- F1/F2 (auditoría ola 6) + plazos ola 7: 1/3/6/9/12 y monto > 0 finito ---
 
     #[test]
     fn validar_plazo_y_monto_aplica_el_contrato() {
-        assert_eq!(validar_plazo_y_monto(3, 100.0), None, "borde inferior válido");
-        assert_eq!(validar_plazo_y_monto(12, 10000.0), None, "borde superior válido");
-        assert_eq!(
-            validar_plazo_y_monto(1000000, 100.0),
-            Some("El plazo debe estar entre 3 y 12 meses")
-        );
-        assert_eq!(validar_plazo_y_monto(0, 100.0), Some("El plazo debe estar entre 3 y 12 meses"));
+        for plazo in [1, 3, 6, 9, 12] {
+            assert_eq!(validar_plazo_y_monto(plazo, 100.0), None, "plazo válido {plazo}");
+        }
+        let msg = Some("El plazo debe ser 1, 3, 6, 9 o 12 meses");
+        assert_eq!(validar_plazo_y_monto(1000000, 100.0), msg);
+        assert_eq!(validar_plazo_y_monto(0, 100.0), msg);
+        assert_eq!(validar_plazo_y_monto(4, 100.0), msg, "plazo fuera del catálogo");
         assert_eq!(validar_plazo_y_monto(6, -1.0), Some("El monto debe ser mayor a 0"));
         assert_eq!(validar_plazo_y_monto(6, 0.0), Some("El monto debe ser mayor a 0"));
     }
@@ -1087,7 +1317,7 @@ mod tests {
         let (status, body) = res.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body.0["status"], "error");
-        assert_eq!(body.0["message"], "El plazo debe estar entre 3 y 12 meses");
+        assert_eq!(body.0["message"], "El plazo debe ser 1, 3, 6, 9 o 12 meses");
     }
 
     #[tokio::test]
@@ -1114,7 +1344,7 @@ mod tests {
         let res = autorizar_credito(State(client_test().await), sesion_test(), Json(req)).await;
         let (status, body) = res.unwrap_err();
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body.0["message"], "El plazo debe estar entre 3 y 12 meses");
+        assert_eq!(body.0["message"], "El plazo debe ser 1, 3, 6, 9 o 12 meses");
     }
 
     #[tokio::test]
