@@ -53,7 +53,7 @@ Constraints:
 | 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
 | 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] auditada 2026-09-06 — **REJECTED** (F1/F2 HIGH + S1 Dockerfile) → hotfix en ola 6-fix |
 | 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [x] auditada 2026-09-06 (APPROVED WITH EXCEPTIONS: A6-1 LOW → ola 7) — **release gate CERRADO**: F1/F2 corregidos en vivo, ambas imágenes Docker construyen (tesseract+spa, no-root), índice único verificado. V despliega con `docs/DEPLOY.md` |
-| 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [ ] **actual** |
+| 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [x] integrada 2026-10-04 (pendiente auditoría) |
 | 8 | Tablero que dice la verdad: KPIs cobrado/por cobrar/capital, morosidad honesta, filtros por periodo, gráficas corregidas + campanita de novedades ("what's new") | [ ] |
 | 9 | Confianza y control: sub-usuarios por empresa (roles + auditoría de quién hizo qué), aval en alta de cliente, catálogo de productos con ID | [ ] |
 | 10 | Dinero y verificación: Stripe (suscripción), validación de correo de empresa, Verificamex (CURP/teléfono), score real (adiós al 550 fijo) | [ ] |
@@ -167,8 +167,8 @@ Fuera de ambos (nadie toca): `frontend/src/main.rs`,
 
 ### Tareas
 
-- [ ] T1 (executor-1): abonos + tasas 1 mes + saldo/estado por dinero + contrato con abonos y liquidación + nombre en cartera + índice parcial → brief `.workflow/briefs/wave7-executor-1.md`
-- [ ] T2 (executor-2): cartera buscador/filtros/dos tablas + botón de abono + plan 1 mes en el modal → brief `.workflow/briefs/wave7-executor-2.md`
+- [x] T1 (executor-1): abonos + tasas 1 mes + saldo/estado por dinero + contrato con abonos y liquidación + nombre en cartera + índice parcial → brief `.workflow/briefs/wave7-executor-1.md`
+- [x] T2 (executor-2): cartera buscador/filtros/dos tablas + botón de abono + plan 1 mes en el modal → brief `.workflow/briefs/wave7-executor-2.md`
 
 ### Arranque de la ola 7 (launch kit)
 
