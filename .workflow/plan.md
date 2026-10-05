@@ -53,8 +53,8 @@ Constraints:
 | 5 | KYC/OCR real (tesseract) + score alternativo por recibos | [x] auditada 2026-09-05 (APPROVED WITH EXCEPTIONS: E1 413→ola 6, E2 fixture→ola 6) |
 | 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] auditada 2026-09-06 — **REJECTED** (F1/F2 HIGH + S1 Dockerfile) → hotfix en ola 6-fix |
 | 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [x] auditada 2026-09-06 (APPROVED WITH EXCEPTIONS: A6-1 LOW → ola 7) — **release gate CERRADO**: F1/F2 corregidos en vivo, ambas imágenes Docker construyen (tesseract+spa, no-root), índice único verificado. V despliega con `docs/DEPLOY.md` |
-| 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [x] integrada 2026-10-04 (pendiente auditoría) |
-| 8 | Tablero que dice la verdad: KPIs cobrado/por cobrar/capital, morosidad honesta, filtros por periodo, gráficas corregidas + campanita de novedades ("what's new") | [ ] |
+| 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [x] auditada 2026-10-05 (APPROVED WITH EXCEPTIONS: E1/E2 MEDIUM → ola 8) — **desplegada a producción por V** (Railway) |
+| 8 | Tablero honesto + novedades + cierre E1/E2: KPIs con filtros de periodo, morosidad por dinero, gráficas corregidas, campanita "what's new", abono atómico y `autorizar` con montos recalculados | [ ] **actual** |
 | 9 | Confianza y control: sub-usuarios por empresa (roles + auditoría de quién hizo qué), aval en alta de cliente, catálogo de productos con ID | [ ] |
 | 10 | Dinero y verificación: Stripe (suscripción), validación de correo de empresa, Verificamex (CURP/teléfono), score real (adiós al 550 fijo) | [ ] |
 | 11 | Documentos y firma: firma digital (pad), contrato firmado por correo, documentos del cliente accesibles a la red con compresión automática | [ ] |
@@ -65,7 +65,134 @@ Constraints:
 
 ---
 
-## Ola 7 (actual): cobranza real y cartera usable
+## Ola 8 (actual): tablero honesto, novedades y cierre E1/E2
+
+Contexto: la ola 7 quedó APPROVED WITH EXCEPTIONS (`.workflow/audits/wave7.md`);
+E1 y E2 son MEDIUM de integridad dentro del tenant, owner planner → entran aquí.
+Además la empresa reportó "TODAS LAS GRÁFICAS REQUIEREN CORRECCIÓN URGENTE Y
+METICULOSA" y V pidió la campanita de novedades. Tres frentes: **E1** (abono
+atómico), **E2** (`autorizar` recalcula montos) y **tablero + novedades**.
+
+### Contrato API ola 8 (ambos executors implementan contra ESTO)
+
+**E1 — integridad de abonos/pagos (cierra la excepción MEDIUM del auditor):**
+
+- `PlanPago` gana `cobrado: f64` con `#[serde(default)]` (docs viejos → 0.0). Es
+  el contador operativo del plan; el ledger (`pagos`) sigue siendo la verdad de
+  auditoría.
+- `cargar_cartera` (ya carga los pagos del tenant) RECONCILIA:
+  `cobrado_ledger = suma(pagos del plan)`; si `plan.cobrado != cobrado_ledger`
+  hace un `update_one` best-effort y responde con `cobrado_ledger`. Los planes
+  legacy se auto-corrigen en la primera lectura.
+- `registrar_abono` y `registrar_pago` RESERVAN de forma atómica sobre el plan
+  antes del insert del pago:
+  `find_one_and_update({_id, empresa, $expr: {$lte: [{$add:[{$ifNull:["$cobrado",0]}, monto]}, {$multiply:["$pago_mensual","$plazo_meses"]}]}}, {$inc:{cobrado:monto}})`.
+  Si no matchea → 400 (no encontrado / excede saldo / ya liquidado). Si el insert
+  del `Pago` falla (incluido el E11000 de cuota duplicada) → `$inc` inverso y 500.
+  Con esto N abonos concurrentes nunca suman más que la deuda.
+- `nota` del abono: recortar a 280 chars (O2 del auditor).
+- Verify (la repro exacta del auditor): plan deuda 3000 + 5 abonos de 1000
+  concurrentes → **3×200 y 2×400**; `cobrado == 3000`, `saldo == 0`.
+
+**E2 — montos confiables en `autorizar`:**
+
+- `autorizar_credito` deja de confiar en `pago_mensual`/`tasa_interes` del body:
+  recomputa `tasa = tasa_por_plazo(plazo)` y
+  `pago_mensual = round(monto_total*(1+tasa)/plazo, 2)`, y persiste los
+  recalculados. El body sigue aceptando los campos (compat) pero se ignoran.
+- Verify: `autorizar {monto_total:100000, plazo_meses:6, pago_mensual:0.01,
+  tasa_interes:0}` → la deuda guardada es `pago_mensual×plazo` correcta, nunca 0.06.
+
+**Tablero honesto (KPIs + filtros + O1):**
+
+- `GET /api/dashboard` acepta `?desde=YYYY-MM-DD&hasta=YYYY-MM-DD` (opcionales) y
+  CALCULA en vivo desde la cartera (el `dashboard_stats` persistido deja de ser
+  fuente; puede seguir escribiéndose por compat). Campos: `capital_colocado`
+  (suma de `monto_total` de planes no liquidados), `cobrado_periodo` (pagos/abonos
+  con fecha en la ventana), `por_cobrar_neto` (suma de `saldo` de no liquidados),
+  `cartera_vencida` (suma de `saldo` de planes Moroso) y `tasa_morosidad =
+  cartera_vencida / capital_colocado` (dinero, no planes). Los 3 campos viejos se
+  conservan.
+- `GET /api/creditos/resumen` acepta los mismos `desde`/`hasta` para la serie
+  `cobrado_vs_por_cobrar`; el resto de gráficas es estado actual.
+- **Bug O1**: `resumen_cartera` deja de filtrar por `p.estado` persistido y usa el
+  estado recalculado de la ola 7 en TODAS sus particiones (aging, morosidad,
+  flujo, distribución, top deudores).
+- `tasa_morosidad` queda documentada como money-based; el semáforo del frontend se
+  recalibra si hace falta.
+
+**Novedades ("what's new", petición de V):**
+
+- `GET /api/novedades` (PÚBLICA, sin JWT; solo texto estático):
+  `{status, version, novedades:[{fecha, titulo, detalle}]}`. `version` es un const
+  de `backend/src/novedades.rs` que se bumpea por release; el changelog (hitos de
+  las olas) vive en el mismo archivo.
+- Frontend: const `APP_VERSION` compilada; al cargar la app pide `/api/novedades`,
+  guarda `pymza_novedades_v` en localStorage y compara:
+  - `version` servidor > `APP_VERSION` → banner **"Hay una actualización
+    disponible — recarga la página"**.
+  - versiones no vistas → badge en la campanita; al abrir, modal con el changelog.
+- `ponytail:` techo: la versión se bumpea a mano en dos archivos; upgrade path =
+  inyectarla por env en build (ambos Dockerfiles). Solo se anuncia a builds que ya
+  traen la feature (desde esta ola en adelante).
+
+### Mapa de propiedad de archivos (ola 8)
+
+| Archivo/glob | Dueño |
+|-----------|-------|
+| `backend/src/routes/credito.rs`, `backend/src/models/credito.rs`, `backend/src/db.rs` (si el reconciler lo necesita), `backend/src/novedades.rs` (nuevo), `backend/src/main.rs`, `docs/API.md` | executor-1 |
+| `frontend/src/components/dashboard.rs`, `frontend/src/components/charts.rs`, `frontend/src/components/sidebar.rs`, `frontend/src/components/novedades.rs` (nuevo), `frontend/src/api.rs`, `frontend/src/main.rs`, `frontend/assets/tailwind.css`, `frontend/tailwind.css` | executor-2 |
+
+Fuera de ambos (nadie toca): `backend/src/routes/cliente.rs`,
+`backend/src/models/cliente.rs`, `backend/src/auth.rs`,
+`frontend/src/components/cartera.rs`, `frontend/src/components/plan_modal.rs`,
+`frontend/src/components/alta_cliente.rs`, `.env*`, `.workflow/**`, `skills/**`,
+`PYMZA.md`, `docs/DEPLOY.md`, `docs/ROADMAP.md`, `docs/INVESTIGACION.md`,
+`Dockerfile.*`, `docker-compose.yml`.
+
+### Tareas
+
+- [ ] T1 (executor-1): E1 abono atómico + E2 montos + tablero honesto + `GET /api/novedades` → brief `.workflow/briefs/wave8-executor-1.md`
+- [ ] T2 (executor-2): dashboard con KPIs/filtros/gráficas + campanita de novedades → brief `.workflow/briefs/wave8-executor-2.md`
+
+### Arranque de la ola 8 (launch kit)
+
+```bash
+git worktree add ../pymza-w8-e1 -b wave8-executor-1 main
+git worktree add ../pymza-w8-e2 -b wave8-executor-2 main
+# Cada uno lee SOLO su brief + §"Ola 8"; termina con `git push origin wave8-executor-K`.
+```
+
+### Plan de integración (ola 8)
+
+Merges en orden: **executor-1 (backend) → executor-2 (frontend)**.
+
+```bash
+# IMPORTANTE: backend/.env apunta a Atlas (lo detectó el auditor ola 7).
+# Forzar SIEMPRE la DB local en el humo:
+cd backend && MONGODB_URI=mongodb://127.0.0.1:27017 cargo build && cargo test
+cd frontend && cargo check --target wasm32-unknown-unknown && cargo test && ./tailwind.sh
+# Humo local (mongod local + seed):
+#  E1: 5 abonos concurrentes de 1000 sobre deuda 3000 → 3×200, 2×400, cobrado=3000
+#  E2: autorizar con pago_mensual/tasa falsos → deuda correcta
+#  dashboard ?desde&hasta → cobrado_periodo correcto; resumen sin estados rancios
+#  GET /api/novedades sin token → version + changelog
+```
+
+### Audit gate (ola 8)
+
+- **Release gate `skills/security-audit`: cero CRITICAL/HIGH** (ola desplegable).
+- E1 y E2 cerrados con la repro del auditor, evidencia en vivo.
+- O1 cerrado: `resumen_cartera` no usa `estado` persistido.
+- KPIs reconciliados contra la DB local; filtros de periodo correctos.
+- `/api/novedades` pública sin secretos; banner de recarga probado cambiando la
+  versión del servidor.
+- Regresión ola 7 (abonos, contrato, cartera, pagos legacy sin `tipo`) verde;
+  cero deps nuevas (`git diff '*Cargo.toml'`).
+
+---
+
+## Ola 7 (histórica): cobranza real y cartera usable
 
 Contexto: PYMZA ya está en producción usándose por empresas reales. La
 retroalimentación de una de ellas (`PYMZA.md`, sección "Observaciones dadas por
@@ -692,3 +819,12 @@ Aprobaciones de V (2026-09-29):
 | 2026-09-29 | **APROBADO**: el admin de la empresa puede **editar/cancelar créditos de SU cartera** (no los perfiles de cliente, que son de la red y solo PYMZA toca desde soporte). Regla contable: sin pagos → editar/borrar; con pagos → solo cancelar (soft) con motivo, jamás reescribir dinero | Corrige errores de captura sin romper el historial financiero |
 | 2026-09-29 | **APROBADO**: score PRIMERO con la red PYMZA (historial propio + recibos); CdC/FICO se integra después. FICO no es fuente de datos: es un modelo que se vende **a través** de los burós (Círculo de Crédito/Buró de Crédito); se contrata el buró y, si se quiere, su score FICO | La red es el foso; el buró es dato externo de pago por consulta (ver `docs/INVESTIGACION.md`) |
 | 2026-09-29 | **APROBADO**: se mantiene gratis hasta que la DB valga algo y el producto se sienta pulido (Stripe queda en ola 10 pero condicionado a "producto pulido") | Las empresas son las que están llenando la base |
+
+Ola 7 — auditoría y cierre (2026-10-05):
+
+| Fecha | Decisión | Por qué |
+|------|----------|-----|
+| 2026-10-05 | Ola 7 **APPROVED WITH EXCEPTIONS** (`.workflow/audits/wave7.md`): 81 tests backend + 48 frontend, tenant isolation/validaciones/índice parcial/regresión legacy verificados en vivo; E1/E2 MEDIUM → ola 8; O1 LOW → ola 8. **V desplegó y Railway mandó a producción correctamente** | Release gate sin CRITICAL/HIGH; las excepciones son integridad intra-tenant, no frontera de seguridad |
+| 2026-10-05 | E1 (abonos concurrentes pueden exceder la deuda) se cierra con contador atómico `plan.cobrado` + guard `$expr` (sin transacciones; funciona en mongod standalone) y reconciliación en `cargar_cartera` | La solución más corta que garantiza el invariante `sum(pagos) ≤ deuda` sin exigir replica set para el humo local |
+| 2026-10-05 | E2 (`autorizar` confiaba en `pago_mensual`/`tasa` del body) se cierra recomputando en backend desde `monto_total`+`plazo` con `tasa_por_plazo`/`generar_plan_pagos` | El backend es la fuente de verdad del dinero; el body no puede fabricar una deuda |
+| 2026-10-05 | Lección operativa: `backend/.env` apunta a **Atlas**; el humo local DEBE forzar `MONGODB_URI=mongodb://127.0.0.1:27017` (el auditor ola 7 tocó Atlas en solo-lectura por no forzarlo) | Proteger la DB real en cada sesión de executor/auditor |
