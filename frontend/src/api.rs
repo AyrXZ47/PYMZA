@@ -314,6 +314,39 @@ pub fn siguiente_cuota_impaga(plazo_meses: i64, cuotas_pagadas: i64) -> Option<i
     (siguiente <= plazo_meses).then_some(siguiente)
 }
 
+// --- Contrato API ola 7: abonos y saldo por dinero. ---
+
+/// Request a `POST /api/creditos/abonos`: abono parcial (o total) al plan.
+/// `nota` es opcional: vacía no viaja en el body (el `Pago` se guarda limpio).
+pub fn registrar_abono(plan_id: &str, monto: f64, nota: &str, token: &str) -> reqwest::RequestBuilder {
+    let mut body = serde_json::json!({ "plan_id": plan_id, "monto": monto });
+    let nota = nota.trim();
+    if !nota.is_empty() {
+        body["nota"] = serde_json::json!(nota);
+    }
+    authed_request(reqwest::Method::POST, "/api/creditos/abonos".to_string(), token).json(&body)
+}
+
+/// Saldo pendiente del plan (contrato ola 7: `max(0, deuda − cobrado)`).
+/// Campo ausente o no numérico → 0.0.
+pub fn saldo_plan(plan: &serde_json::Value) -> f64 {
+    plan.get("saldo").and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+/// Total cobrado del plan (pagos de cuota + abonos). Ausente → 0.0.
+pub fn cobrado_plan(plan: &serde_json::Value) -> f64 {
+    plan.get("cobrado").and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+/// Nombre del cliente del plan; si el join no lo trae (plan viejo o cliente
+/// borrado de la red) cae al CURP para que la fila nunca quede sin identificar.
+pub fn nombre_plan(plan: &serde_json::Value) -> String {
+    plan.get("nombre")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| plan["cliente_curp"].as_str().unwrap_or("—").to_string())
+}
 
 // --- Contrato PDF (contrato API ola 6): GET /api/creditos/{plan_id}/contrato. ---
 
@@ -838,6 +871,60 @@ mod tests {
         assert_eq!(siguiente_cuota_impaga(12, 15), None, "datos raros");
         assert_eq!(siguiente_cuota_impaga(0, 0), None);
         assert_eq!(siguiente_cuota_impaga(12, -3), Some(1), "pagadas negativas no rompen");
+    }
+
+    // --- Contrato API ola 7: abonos y saldo por dinero. ---
+
+    #[test]
+    fn registrar_abono_construye_post_con_plan_y_monto_sin_nota_vacia() {
+        let request = registrar_abono("665f1a2b3c4d5e6f7a8b9c0d", 250.0, "  ", "tok")
+            .build()
+            .unwrap();
+        assert_eq!(*request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().path(), "/api/creditos/abonos");
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "plan_id": "665f1a2b3c4d5e6f7a8b9c0d", "monto": 250.0 })
+        );
+        assert!(body.get("nota").is_none(), "nota vacía no viaja");
+    }
+
+    #[test]
+    fn registrar_abono_incluye_nota_no_vacia_recortada() {
+        let request = registrar_abono("665f1a2b3c4d5e6f7a8b9c0d", 100.0, "  abono semanal ", "tok")
+            .build()
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body["nota"], "abono semanal");
+    }
+
+    #[test]
+    fn saldo_y_cobrado_toleran_campo_ausente() {
+        let plan = serde_json::json!({ "monto_total": 1000.0 });
+        assert_eq!(saldo_plan(&plan), 0.0);
+        assert_eq!(cobrado_plan(&plan), 0.0);
+        let con_dinero = serde_json::json!({ "saldo": 732.5, "cobrado": 267.5 });
+        assert_eq!(saldo_plan(&con_dinero), 732.5);
+        assert_eq!(cobrado_plan(&con_dinero), 267.5);
+    }
+
+    #[test]
+    fn nombre_plan_usa_nombre_y_cae_al_curp_sin_el() {
+        assert_eq!(
+            nombre_plan(&serde_json::json!({ "nombre": "María García", "cliente_curp": "GARM980412HDFNRL05" })),
+            "María García"
+        );
+        assert_eq!(
+            nombre_plan(&serde_json::json!({ "nombre": "", "cliente_curp": "GARM980412HDFNRL05" })),
+            "GARM980412HDFNRL05"
+        );
+        assert_eq!(
+            nombre_plan(&serde_json::json!({ "cliente_curp": "GARM980412HDFNRL05" })),
+            "GARM980412HDFNRL05"
+        );
     }
 
     // --- Contrato API ola 5: KYC (INE) y score por recibos. ---

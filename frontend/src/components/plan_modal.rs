@@ -49,10 +49,11 @@ pub fn PlanModal(
                                 class: "bg-white border border-slate-300 text-slate-900 rounded-lg px-3 py-2 outline-none focus:border-blue-500 dark:bg-slate-800 dark:border-slate-600 dark:text-white",
                                 value: plan_plazo(),
                                 onchange: move |e| plan_plazo.set(e.value()),
-                                option { value: "3", "3 meses — Tasa 3%" }
-                                option { value: "6", "6 meses — Tasa 6%" }
-                                option { value: "9", "9 meses — Tasa 10%" }
-                                option { value: "12", "12 meses — Tasa 15%" }
+                                option { value: "1", "1 mes — Tasa 7%" }
+                                option { value: "3", "3 meses — Tasa 9%" }
+                                option { value: "6", "6 meses — Tasa 12%" }
+                                option { value: "9", "9 meses — Tasa 15%" }
+                                option { value: "12", "12 meses — Tasa 18%" }
                             }
                         }
                         div { class: "flex justify-end gap-3 mt-6",
