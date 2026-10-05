@@ -64,8 +64,15 @@ pub struct DashboardStats {
     pub proximos_cobros: i32,
 }
 
-/// Pago registrado de una cuota (ola 4). `plan_id` es el ObjectId del plan
-/// (hex en la API). `fecha` es "YYYY-MM-DD" UTC.
+/// Ola 7: valor por defecto de `Pago.tipo` — los pagos viejos (sin el campo en
+/// Mongo) se leen como cuota, así el saldo/estado no cambia.
+fn tipo_cuota() -> String {
+    "cuota".to_string()
+}
+
+/// Pago registrado de una cuota (ola 4) o abono parcial (ola 7). `plan_id` es
+/// el ObjectId del plan (hex en la API). `fecha` es "YYYY-MM-DD" UTC.
+/// `tipo`: "cuota" (default, cuota en 1..=plazo) o "abono" (cuota = 0).
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Pago {
     pub plan_id: ObjectId,
@@ -74,6 +81,10 @@ pub struct Pago {
     pub cuota: i32,
     pub monto: f64,
     pub fecha: String,
+    #[serde(default = "tipo_cuota")]
+    pub tipo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nota: Option<String>,
 }
 
 /// Body de `POST /api/creditos/pagos`.
@@ -82,4 +93,48 @@ pub struct RegistrarPagoReq {
     pub plan_id: String,
     pub cuota: i32,
     pub monto: f64,
+}
+
+/// Body de `POST /api/creditos/abonos` (ola 7): pago parcial que no marca la
+/// cuota como pagada.
+#[derive(Deserialize)]
+pub struct RegistrarAbonoReq {
+    pub plan_id: String,
+    pub monto: f64,
+    #[serde(default)]
+    pub nota: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pago_viejo_sin_tipo_lee_como_cuota() {
+        // Regresión ola 7: un documento de `pagos` previo al campo `tipo` debe
+        // deserializar como cuota (y sin nota) — el saldo/estado no cambia.
+        let viejo = r#"{
+            "plan_id": {"$oid": "507f1f77bcf86cd799439011"},
+            "empresa": "demo@pymza.mx",
+            "cliente_curp": "GARM980412HDFNRL05",
+            "cuota": 1,
+            "monto": 1766.67,
+            "fecha": "2026-02-01"
+        }"#;
+        let pago: Pago = serde_json::from_str(viejo).unwrap();
+        assert_eq!(pago.tipo, "cuota");
+        assert_eq!(pago.nota, None);
+        assert_eq!(pago.cuota, 1);
+    }
+
+    #[test]
+    fn abono_serializa_cuota_cero_y_tipo() {
+        let abono = RegistrarAbonoReq {
+            plan_id: "507f1f77bcf86cd799439011".into(),
+            monto: 500.0,
+            nota: Some("abono semanal".into()),
+        };
+        assert_eq!(abono.monto, 500.0);
+        assert_eq!(abono.nota.as_deref(), Some("abono semanal"));
+    }
 }
