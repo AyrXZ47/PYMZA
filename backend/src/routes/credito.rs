@@ -894,12 +894,30 @@ pub async fn descargar_contrato(
         .map(|c| c.nombre_completo)
         .unwrap_or_else(|| plan.cliente_curp.clone());
 
+    // Ola 7: pagos/abonos del plan (filtrados por tenant) para la sección del
+    // contrato; el cobrado/saldo de emisión sale de la misma suma.
+    let mut cursor = db
+        .collection::<Pago>("pagos")
+        .find(doc! { "plan_id": oid, "empresa": &sesion.correo }, None)
+        .await
+        .map_err(error_db)?;
+    let mut pagos = Vec::new();
+    while let Some(pago) = cursor.next().await {
+        pagos.push(pago.map_err(error_db)?);
+    }
+    pagos.sort_by(|a, b| a.fecha.cmp(&b.fecha));
+    let cobrado: f64 = pagos.iter().map(|p| p.monto).sum();
+    let saldo_actual = saldo(&plan, cobrado);
+
     let pdf = pdf_contrato(
         &nombre_empresa,
         &sesion.correo,
         &nombre_cliente,
         &plan.cliente_curp,
         &plan,
+        &pagos,
+        redondear2(cobrado),
+        saldo_actual,
         &Utc::now().format("%Y-%m-%d").to_string(),
     );
 
