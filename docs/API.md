@@ -492,10 +492,10 @@ para registrar pagos (también se expone como `_id` en `GET /api/creditos`).
 
 ## POST `/api/creditos/pagos` — protegida
 
-Registra el pago de una cuota de un plan (ola 4). Inserta en `pagos`,
-recalcula el estado del plan (`Activo` → `Moroso` si hay cuota vencida sin
-pagar → `Liquidado` cuando se pagan todas las cuotas) y devuelve el plan
-actualizado con su avance.
+Registra el pago de una cuota de un plan (ola 4). Inserta en `pagos` con
+`tipo: "cuota"`, recalcula el saldo/estado por dinero (ver §"Semántica de saldo
+y estado (ola 7)") y devuelve el plan actualizado con su avance, `cobrado` y
+`saldo`.
 
 **Requiere:** `Authorization: Bearer <token>` — el plan se busca entre los de
 la empresa del token; el tenant sale del token, nunca del body.
