@@ -54,18 +54,87 @@ Constraints:
 | 6 | Contrato PDF + Producción: CORS productivo, body limit, rate limiting, Dockerfiles Railway, security audit (release gate) | [x] auditada 2026-09-06 — **REJECTED** (F1/F2 HIGH + S1 Dockerfile) → hotfix en ola 6-fix |
 | 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [x] auditada 2026-09-06 (APPROVED WITH EXCEPTIONS: A6-1 LOW → ola 7) — **release gate CERRADO**: F1/F2 corregidos en vivo, ambas imágenes Docker construyen (tesseract+spa, no-root), índice único verificado. V despliega con `docs/DEPLOY.md` |
 | 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [x] auditada 2026-10-05 (APPROVED WITH EXCEPTIONS: E1/E2 MEDIUM → ola 8) — **desplegada a producción por V** (Railway) |
-| 8 | Tablero honesto + novedades + cierre E1/E2: KPIs con filtros de periodo, morosidad por dinero, gráficas corregidas, campanita "what's new", abono atómico y `autorizar` con montos recalculados | [ ] **actual** |
-| 9 | Confianza y control: sub-usuarios por empresa (roles + auditoría de quién hizo qué), aval en alta de cliente, catálogo de productos con ID | [ ] |
-| 10 | Dinero y verificación: Stripe (suscripción), validación de correo de empresa, Verificamex (CURP/teléfono), score real (adiós al 550 fijo) | [ ] |
-| 11 | Documentos y firma: firma digital (pad), contrato firmado por correo, documentos del cliente accesibles a la red con compresión automática | [ ] |
-| 12 | Ecosistema: frontends inversionistas/soporte, buró CdC/FICO, open banking, procesar pagos de deudores vía PYMZA, CFDI/PAC | [ ] |
+| 8 | Tablero honesto + novedades + cierre E1/E2: KPIs con filtros de periodo, morosidad por dinero, gráficas corregidas, campanita "what's new", abono atómico y `autorizar` con montos recalculados | [x] auditada 2026-10-07 (APPROVED WITH EXCEPTIONS: E1/E2 MEDIUM + O1 LOW → ola 8-fix) |
+| 8-fix | Integridad de cobranza: contador `cobrado` recuperable, tope de `monto_total`/`pago_mensual` finito, aging/flujo por dinero y reparación de planes legacy con dinero inconsistente | [ ] **actual** |
+| 9 | Cumplimiento y marca PIGNUS: aviso de privacidad + ToS con checkbox, rebrand visible (PYMZA→PIGNUS), licencia propietaria y repo privado | [ ] |
+| 10 | Confianza y control: sub-usuarios por empresa (roles + auditoría de quién hizo qué), aval en alta de cliente, catálogo de productos con ID, editar/cancelar créditos | [ ] |
+| 11 | Dinero y verificación: Stripe (suscripción), validación de correo de empresa, Verificamex (CURP/teléfono), score real (adiós al 550 fijo) | [ ] |
+| 12 | Documentos y firma: firma digital (pad), contrato firmado por correo, documentos del cliente accesibles a la red con compresión automática | [ ] |
+| 13 | Ecosistema: frontends inversionistas/soporte, buró CdC/FICO, open banking, procesar pagos de deudores vía PIGNUS, CFDI/PAC | [ ] |
 
 > Estados: planificada → en vuelo → integrada → auditada → hecha.
 > Actualizar después de cada paso, quien lo ejecute.
 
 ---
 
-## Ola 8 (actual): tablero honesto, novedades y cierre E1/E2
+## Ola 8-fix (actual): integridad de cobranza
+
+Contexto: la ola 8 quedó APPROVED WITH EXCEPTIONS y las excepciones son
+integridad de dinero en producción (owner planner) → mini-ola de UN executor
+backend, como la 6-fix (paralelizar no compra nada). Además, V reportó en
+`PIGNUS.md` ("Errores encontrados"): *"al registrar un abono muy pequeño, mandó
+una venta de prueba directo a liquidados"*. Hipótesis: un plan legacy con
+`pago_mensual`/`tasa_interes` fabricados ANTES del fix E2 (la ola 8 solo
+recalcula en `autorizar` nuevo) tiene una deuda diminuta; cualquier abono la
+liquida. Esta mini-ola agrega el diagnóstico/reparación de esos planes.
+
+### Contrato API ola 8-fix
+
+- **E2-w8 (tope de dinero):** `validar_plazo_y_monto` rechaza `monto_total` no
+  finito o `> MONTO_MAX_MXN` (const, p. ej. `1e12`) → 400; y antes de persistir se
+  verifica `pago_mensual_de(...).is_finite()`. Nunca más `Infinity` en Mongo.
+- **E1-w8 (contador recuperable):** el contador `cobrado` deja de ser
+  irreversible. Se lleva un contador de reservas en vuelo (`reservas` +
+  `reserva_ts` en el plan): reservar = `$inc {cobrado:monto, reservas:1}`;
+  confirmar (insert del `Pago` OK) = `$inc {reservas:-1}`; rollback =
+  `$inc {cobrado:-monto, reservas:-1}`. `cargar_cartera` reconcilia contra el
+  ledger en AMBAS direcciones cuando `reservas == 0` o la reserva es más vieja
+  que 5 min (reserva muerta) → un contador inflado se auto-repara y el plan
+  vuelve a ser cobrable. Los planes legacy sin `reservas` se tratan como 0.
+  `ponytail:` techo: sin transacciones; el invariante depende de los `$inc`;
+  upgrade path = sesión/transacción en replica set (Atlas ya lo es).
+- **O1 (aging/flujo por dinero):** `resumen_cartera` usa `cuotas_cubiertas`
+  (dinero) en aging, flujo proyectado y por-cobrar: un abono de 500 sobre deuda
+  3000 deja `aging.90+ = 2500`, no 3000.
+- **Reparación legacy:** `backend/scripts/reparar_planes.js` (dry-run por
+  defecto; `--apply` escribe): lista planes con
+  `pago_mensual*plazo != pago_mensual_de(monto_total,plazo)` o `cobrado > ledger`
+  y, con `--apply`, recomputa `tasa_interes`/`pago_mensual` desde
+  `monto_total`+`plazo` (tabla vigente) y fija `cobrado = ledger`. Lo corre V
+  bajo su control (backup/Atlas); NO corre en el humo. Cierra el síntoma del
+  abono pequeño sobre ventas de prueba viejas.
+
+### Mapa de propiedad (8-fix)
+
+| Archivo/glob | Dueño |
+|-----------|-------|
+| `backend/src/routes/credito.rs`, `backend/src/models/credito.rs`, `backend/src/db.rs`, `backend/src/main.rs` (solo si hace falta), `backend/scripts/**`, `docs/API.md` | executor único |
+
+Fuera de alcance: TODO lo demás (frontend, auth, pdf, `.workflow/**`, docs de deploy).
+
+### Tareas
+
+- [ ] T1 (executor único): E2 tope + E1 contador recuperable + O1 aging por dinero + `reparar_planes.js` → brief `.workflow/briefs/wave8fix-executor-1.md`
+
+### Arranque / integración (8-fix)
+
+```bash
+git worktree add ../pymza-w8fix-e1 -b wave8fix-executor-1 main
+cd backend && MONGODB_URI=mongodb://127.0.0.1:27017 cargo build && cargo test
+```
+
+### Audit gate (8-fix — re-auditoría puntual, NO repetir el gate completo)
+
+- E1: plan con `cobrado` inflado (5000, ledger 0) → tras la reconciliación, un
+  abono vuelve a responder 200 (antes 400 para siempre).
+- E2: `autorizar {monto_total:1e308}` → 400; `pago_mensual` finito siempre.
+- O1: abono 500 sobre deuda 3000 → `aging.90+ = 2500`.
+- Regresión ola 7/8 verde (abonos, contrato, cartera, tablero por ventana,
+  `Pago` legacy sin `tipo`); cero deps nuevas.
+
+---
+
+## Ola 8 (histórica): tablero honesto, novedades y cierre E1/E2
 
 Contexto: la ola 7 quedó APPROVED WITH EXCEPTIONS (`.workflow/audits/wave7.md`);
 E1 y E2 son MEDIUM de integridad dentro del tenant, owner planner → entran aquí.
@@ -354,39 +423,51 @@ Integrador actualiza los estados de la tabla de olas tras cada paso.
 
 ---
 
-## Olas 8-12 (foco, sin detallar — plan rodante)
+## Cumplimiento legal y marca PIGNUS (ola 9 — requiere datos de V)
 
-- **Ola 8 — Tablero que dice la verdad + novedades.** KPIs honestos (cobrado real,
-  por cobrar neto, capital colocado, morosidad sobre dinero y no sobre planes),
-  filtros por periodo (semana / mes / bimestre / trimestre / semestre) y
-  corrección de las 6 gráficas del `resumen`. Incluye la **campanita de novedades**
-  ("what's new"): versión de la app + `GET /api/novedades` que devuelve la última
-  versión y el changelog; si la versión compilada del WASM es menor que la del
-  servidor, el usuario ve "hay una actualización, recarga" y el bell lista los
-  cambios. Techo conocido: solo se anuncia a quien ya trae esta build (o superior).
-- **Ola 9 — Confianza y control interno.** Sub-usuarios por empresa con rol fijo
+V registra la marca ante el IMPI y renombra el producto a **PIGNUS**. Antes de
+ejecutar faltan datos y decisiones (ver reporte del planner); esta sección fija el
+alcance técnico una vez que V responda:
+
+- **Aviso de privacidad (LFPDPPP)** como PÁGINA DE TEXTO en la app (no PDF), con
+  checkbox NO premarcado en el alta de empresa + registro de evidencia (versión
+  del aviso, fecha/hora, IP) por cuenta. Debe declarar: responsable y domicilio;
+  datos recabados; finalidades primarias y secundarias; **transferencias a las
+  demás PYMES de la red** (el perfil global se comparte: es el corazón del
+  producto y el mayor riesgo legal); derechos ARCO y cómo ejercerlos; cookies;
+  revocación; cambios al aviso.
+- **Términos de servicio** (misma mecánica de checkbox): limitación de
+  responsabilidad del score ("la decisión de otorgar crédito es de la PYME"), uso
+  aceptable, propiedad intelectual, suspensión, jurisdicción.
+- **Rebrand PYMZA → PIGNUS**: strings visibles del frontend, `<title>`/meta,
+  contrato PDF, `novedades.rs`, mensajes del backend, README/AGENTS/plan y el
+  symlink de la nota. El tenant (correo) y el JWT NO cambian. Dominio: decisión de
+  V (si cambia, re-verificar Meta y ajustar `ALLOWED_ORIGINS`/`API_BASE`).
+- **Licencia**: pasar de Apache-2.0 a **propietaria** ("todos los derechos
+  reservados") en versiones futuras + repo privado; confirmar antes que V es el
+  único titular del copyright (ver reporte).
+- **Repo público de vitrina (opcional)**: README + docs + capturas + snippets
+  genéricos, SIN scoring/auth; licencia MIT/CC-BY solo para esa vitrina.
+
+## Roadmap extendido (olas 9-13, foco — plan rodante)
+
+- **Ola 9 — Cumplimiento y marca PIGNUS** (arriba).
+- **Ola 10 — Confianza y control interno.** Sub-usuarios por empresa con rol fijo
   (subadmin / cajero / vendedor / cobrador) y credenciales propias, **auditoría**
   de quién hizo cada acción, **aval** en el alta de cliente, **catálogo de
-  productos** con ID, y **editar/cancelar créditos** de la propia cartera por el
-  admin. Diseño en §"Identidad, roles y edición de cartera (ola 9)".
-- **Ola 10 — Dinero y verificación real.** Suscripción con Stripe (plan por
-  empresa, **solo cuando el producto esté pulido**: hoy sigue gratis), validación
-  del correo de empresa, Verificamex para CURP/teléfono (deja de ser heurística) y
-  **score real** de PYMZA (sustituir el 550 fijo por fórmula con historial de la
-  red + recibos). CdC/FICO se integran después (ver §"Score: red primero,
-  buró después").
-- **Ola 11 — Documentos y firma.** Firma digital en pad (pantalla/lápiz) incrustada
-  en el contrato, envío del contrato firmado por correo, y documentos del cliente
-  (INE, recibos, aval) comprimidos automáticamente (<2MB) y accesibles a la red
-  PYMZA desde el perfil del cliente.
-- **Ola 12 — Ecosistema.** Frontend de inversionistas (métricas/consumo), frontend
-  de servicio técnico de PYMZA, buró Círculo de Crédito/FICO (sandbox→producción),
-  open banking, procesar pagos de deudores a través de PYMZA para liquidar en
-  tiempo real, y CFDI vía PAC si una empresa lo exige.
+  productos** con ID, y **editar/cancelar créditos**. Diseño en §"Identidad, roles
+  y edición de cartera".
+- **Ola 11 — Dinero y verificación real.** Stripe (solo cuando el producto esté
+  pulido), validación del correo de empresa, Verificamex (CURP/teléfono) y **score
+  real** (sustituir el 550 fijo). CdC/FICO después.
+- **Ola 12 — Documentos y firma.** Firma digital en pad, contrato firmado por
+  correo, documentos del cliente comprimidos (<2MB) y accesibles a la red.
+- **Ola 13 — Ecosistema.** Frontends inversionistas/soporte, buró CdC/FICO, open
+  banking, pagos de deudores vía PIGNUS, CFDI/PAC.
 
 ---
 
-## Identidad, roles y edición de cartera (diseño para ola 9)
+## Identidad, roles y edición de cartera (diseño para ola 10)
 
 Aprobado por V. Hoy cada empresa tiene UNA cuenta (`empresas`, tenant = correo);
 todos los que conocen la contraseña hacen de todo y no se sabe quién. El objetivo
@@ -828,3 +909,17 @@ Ola 7 — auditoría y cierre (2026-10-05):
 | 2026-10-05 | E1 (abonos concurrentes pueden exceder la deuda) se cierra con contador atómico `plan.cobrado` + guard `$expr` (sin transacciones; funciona en mongod standalone) y reconciliación en `cargar_cartera` | La solución más corta que garantiza el invariante `sum(pagos) ≤ deuda` sin exigir replica set para el humo local |
 | 2026-10-05 | E2 (`autorizar` confiaba en `pago_mensual`/`tasa` del body) se cierra recomputando en backend desde `monto_total`+`plazo` con `tasa_por_plazo`/`generar_plan_pagos` | El backend es la fuente de verdad del dinero; el body no puede fabricar una deuda |
 | 2026-10-05 | Lección operativa: `backend/.env` apunta a **Atlas**; el humo local DEBE forzar `MONGODB_URI=mongodb://127.0.0.1:27017` (el auditor ola 7 tocó Atlas en solo-lectura por no forzarlo) | Proteger la DB real en cada sesión de executor/auditor |
+
+Ola 8 — auditoría, cumplimiento y re-segmentación (2026-10-07):
+
+| Fecha | Decisión | Por qué |
+|------|----------|-----|
+| 2026-10-07 | Ola 8 **APPROVED WITH EXCEPTIONS** (`.workflow/audits/wave8.md`): 87 tests backend + 60 frontend, clippy 0/0, E1 (3×200/2×400), E2 recompute, tablero por ventana y `/api/novedades` verificados en vivo. Excepciones E1/E2 MEDIUM + O1 LOW → ola 8-fix | Release gate sin CRITICAL/HIGH; la ola queda desplegable |
+| 2026-10-07 | **Re-segmentación**: ola **8-fix** (integridad de cobranza, 1 executor backend) → ola **9** cumplimiento y marca PIGNUS → ola **10** roles/control (antes era 9) → 11/12/13 igual | Cerrar los MEDIUM de dinero en producción antes de abrir frente nuevo; el rol de "siguiente ola" se mantiene único y detallado |
+| 2026-10-07 | `PlanPago.cobrado` NO entra al struct: el executor lo dejó como campo BSON crudo de `planes_pago` para no romper el literal de `pdf.rs` (archivo prohibido). Aceptado; la 8-fix mantiene el enfoque y lo documenta | Evitar tocar un archivo de otro dueño por un campo operativo; el ledger sigue siendo la verdad |
+| 2026-10-07 | `frontend/src/components/mod.rs` (+1 línea `pub mod novedades;`) quedó fuera del mapa de propiedad de la ola 8: **gap del planner**, no del executor. Aceptado; `mod.rs` se añade a los mapas que registren módulos nuevos | El wiring de un módulo nuevo es obligatorio para compilar; el mapa debe preverlo |
+| 2026-10-07 | `APP_VERSION` (frontend) == `VERSION` (backend) == `0.8.0`; bump manual en dos archivos documentado como techo (falta el prefijo literal `ponytail:` → pendiente menor) | El banner de "hay actualización" depende de que ambos coincidan |
+| 2026-10-07 | **Cumplimiento legal nuevo**: aviso de privacidad y ToS como página de texto con checkbox (no PDF) + evidencia de aceptación; rol de PIGNUS; transferencia a la red de PYMES declarada; licencia propietaria + repo privado; IMPI clase 9 + 42 | V entra a registro de marca y la LFPDPPP obliga; el perfil compartido entre PYMES es una transferencia que debe consentirse |
+| 2026-10-07 | **Bug de V** ("abono muy pequeño → venta de prueba a liquidados") entra a 8-fix como diagnóstico/reparación de planes legacy con `pago_mensual`/`tasa` fabricados (la ola 8 solo recalcula autorizaciones NUEVAS) | E2 pre-fix permitía deuda diminuta; esos planes siguen en Atlas y hay que detectarlos/repararlos |
+| 2026-10-07 | No confundir: el auditor de la ola 7 encontró E1/E2 (concurrencia/montos), NO el síntoma del abono pequeño; ese es de la nota de V y se atiende en 8-fix | Trazabilidad de hallazgos |
+| 2026-10-07 | Entorno de V: el `rustup` de NixOS tiene el wrapper `ld.lld` roto; builds/tests requieren `RUSTFLAGS="-C link-arg=-fuse-ld=bfd"` hasta repararlo (no es del repo) | Sin eso, integrador/auditor no corren el comando literal |
