@@ -194,12 +194,21 @@ pub async fn theme_leer() -> Option<String> {
 }
 
 /// Estadísticas del dashboard devueltas por `GET /api/dashboard` (`stats`).
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+/// Contrato ola 8: los 3 campos viejos se conservan y se suman los KPIs
+/// honestos calculados en vivo (`capital_colocado`, `cobrado_periodo`,
+/// `por_cobrar_neto`, `cartera_vencida`, `tasa_morosidad` money-based).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DashboardStats {
     pub empresa: String,
     pub creditos_activos: i32,
     pub capital_prestado: f64,
     pub proximos_cobros: i32,
+    pub capital_colocado: f64,
+    pub cobrado_periodo: f64,
+    pub por_cobrar_neto: f64,
+    pub cartera_vencida: f64,
+    pub tasa_morosidad: f64,
 }
 
 /// Fila del plan de pagos devuelta por `POST /api/creditos/evaluar`.
@@ -279,14 +288,174 @@ pub fn parsear_resumen(data: &serde_json::Value) -> Option<Resumen> {
     }
 }
 
+// --- Contrato API ola 8: KPIs/filtros de periodo y novedades. ---
+
+/// Preset del selector de periodo del dashboard. Se traduce a una ventana
+/// móvil de días terminando hoy (mismo `desde`/`hasta` para dashboard y
+/// resumen).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PresetPeriodo {
+    Semana,
+    Mes,
+    Bimestre,
+    Trimestre,
+    Semestre,
+}
+
+impl PresetPeriodo {
+    /// Orden de aparición en el selector (y default = `Mes`).
+    pub const TODOS: [PresetPeriodo; 5] = [
+        PresetPeriodo::Semana,
+        PresetPeriodo::Mes,
+        PresetPeriodo::Bimestre,
+        PresetPeriodo::Trimestre,
+        PresetPeriodo::Semestre,
+    ];
+
+    pub fn etiqueta(self) -> &'static str {
+        match self {
+            PresetPeriodo::Semana => "Semana",
+            PresetPeriodo::Mes => "Mes",
+            PresetPeriodo::Bimestre => "Bimestre",
+            PresetPeriodo::Trimestre => "Trimestre",
+            PresetPeriodo::Semestre => "Semestre",
+        }
+    }
+
+    fn dias(self) -> i64 {
+        match self {
+            PresetPeriodo::Semana => 7,
+            PresetPeriodo::Mes => 30,
+            PresetPeriodo::Bimestre => 60,
+            PresetPeriodo::Trimestre => 90,
+            PresetPeriodo::Semestre => 180,
+        }
+    }
+}
+
+/// Días civiles desde 1970-01-01 (algoritmo de Howard Hinnant, dominio gregoriano).
+fn dias_desde_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = ((m + 9) % 12) as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Inversa de `dias_desde_civil` → (año, mes, día).
+fn civil_desde_dias(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
+}
+
+fn parse_fecha(s: &str) -> Option<(i64, u32, u32)> {
+    let mut it = s.split('-');
+    let y = it.next()?.parse().ok()?;
+    let m: u32 = it.next()?.parse().ok()?;
+    let d: u32 = it.next()?.parse().ok()?;
+    if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// Ventana `(desde, hasta)` en `YYYY-MM-DD` para un preset, terminando en
+/// `hoy`. Función pura y testeada; `hoy` inválido → `("", "")` (sin filtro,
+/// el backend cae a su default).
+pub fn rango_periodo(preset: PresetPeriodo, hoy: &str) -> (String, String) {
+    let Some((y, m, d)) = parse_fecha(hoy) else {
+        return (String::new(), String::new());
+    };
+    let hasta = dias_desde_civil(y, m, d);
+    let (dy, dm, dd) = civil_desde_dias(hasta - (preset.dias() - 1));
+    let (hy, hm, hd) = civil_desde_dias(hasta);
+    (
+        format!("{dy:04}-{dm:02}-{dd:02}"),
+        format!("{hy:04}-{hm:02}-{hd:02}"),
+    )
+}
+
+/// Fecha local del navegador en `YYYY-MM-DD` (solo wasm; host → None).
+/// No usa `toISOString` (UTC) para no cruzar de día en husos negativos.
+pub async fn fecha_hoy() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let eval = dioxus::document::eval(
+            "const d = new Date(); \
+             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;",
+        );
+        let valor = eval.await.ok()?.as_str()?.to_string();
+        (!valor.is_empty()).then_some(valor)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// Ruta con query de periodo; sin fechas válidas no manda query string.
+fn ruta_con_periodo(path: &str, desde: &str, hasta: &str) -> String {
+    if desde.is_empty() || hasta.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?desde={desde}&hasta={hasta}")
+    }
+}
+
+/// Parseo puro del body de `GET /api/dashboard` (testeable en host).
+pub fn parsear_dashboard(data: &serde_json::Value) -> Option<DashboardStats> {
+    if data["status"] == "success" {
+        serde_json::from_value(data["stats"].clone()).ok()
+    } else {
+        None
+    }
+}
+
+/// Descarga los KPIs del dashboard del tenant para la ventana pedida. Ante un
+/// 401 mata la sesión (vía `sesion_ok`).
+pub async fn obtener_dashboard_periodo(
+    token: &str,
+    desde: &str,
+    hasta: &str,
+    is_authenticated: Signal<bool>,
+    token_sig: Signal<String>,
+) -> Result<DashboardStats, String> {
+    let path = ruta_con_periodo("/api/dashboard", desde, hasta);
+    let res = authed_request(reqwest::Method::GET, path, token)
+        .send()
+        .await
+        .map_err(|e| format!("Sin conexión con el servidor: {e}"))?;
+    if !sesion_ok(&res, is_authenticated, token_sig) {
+        return Err("Sesión expirada".to_string());
+    }
+    let data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida del servidor: {e}"))?;
+    parsear_dashboard(&data).ok_or_else(|| "No se pudo leer el dashboard".to_string())
+}
+
 /// Descarga el resumen de cartera del tenant. Ante un 401 mata la sesión y
 /// devuelve error (el dashboard lo muestra; el logout lo maneja `sesion_ok`).
 pub async fn obtener_resumen(
     token: &str,
+    desde: &str,
+    hasta: &str,
     is_authenticated: Signal<bool>,
     token_sig: Signal<String>,
 ) -> Result<Resumen, String> {
-    let res = authed_request(reqwest::Method::GET, "/api/creditos/resumen".to_string(), token)
+    let path = ruta_con_periodo("/api/creditos/resumen", desde, hasta);
+    let res = authed_request(reqwest::Method::GET, path, token)
         .send()
         .await
         .map_err(|e| format!("Sin conexión con el servidor: {e}"))?;
