@@ -53,6 +53,12 @@ pub(crate) fn generar_plan_pagos(monto: f64, plazo_meses: i32, tasa: f64) -> Vec
     }).collect()
 }
 
+/// Cuota mensual canónica del contrato: `round(monto_total*(1+tasa)/plazo, 2)`.
+/// `autorizar` y el PDF usan la misma fórmula; el body no es fuente de verdad (E2).
+pub(crate) fn pago_mensual_de(monto_total: f64, plazo_meses: i32) -> f64 {
+    redondear2(monto_total * (1.0 + tasa_por_plazo(plazo_meses)) / plazo_meses as f64)
+}
+
 // --- Ciclo de vida del plan (ola 4): funciones PURAS, testeadas sin DB ---
 
 /// Vencimiento de la cuota n = fecha del plan (YYYY-MM-DD) + n meses.
@@ -601,6 +607,10 @@ pub async fn autorizar_credito(
     if let Some(msg) = validar_plazo_y_monto(payload.plazo_meses, payload.monto_total) {
         return Err(error_status(StatusCode::BAD_REQUEST, msg));
     }
+    // Ola 8 (E2): los montos NO se confían al body — se recomputan desde
+    // `monto_total` + `plazo` (el body solo queda por compatibilidad).
+    let tasa = tasa_por_plazo(payload.plazo_meses);
+    let pago_mensual = pago_mensual_de(payload.monto_total, payload.plazo_meses);
     let plan_pago = PlanPago {
         id: None, // Mongo lo genera al insertar
         empresa: sesion.correo.clone(),
@@ -608,8 +618,8 @@ pub async fn autorizar_credito(
         producto: payload.producto.clone(),
         monto_total: payload.monto_total,
         plazo_meses: payload.plazo_meses,
-        pago_mensual: payload.pago_mensual,
-        tasa_interes: payload.tasa_interes,
+        pago_mensual,
+        tasa_interes: tasa,
         estado: "Activo".to_string(),
         fecha: chrono::Local::now().format("%Y-%m-%d").to_string(),
     };

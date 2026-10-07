@@ -34,7 +34,11 @@ pub struct AutorizarReq {
     pub producto: String,
     pub monto_total: f64,
     pub plazo_meses: i32,
+    // Ola 8 (E2): se siguen aceptando por compatibilidad, pero `autorizar` los
+    // IGNORA y recomputa ambos desde `monto_total` + `plazo`.
+    #[allow(dead_code)]
     pub pago_mensual: f64,
+    #[allow(dead_code)]
     pub tasa_interes: f64,
 }
 
