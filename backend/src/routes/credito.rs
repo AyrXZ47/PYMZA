@@ -9,7 +9,7 @@ use axum::{
 };
 use chrono::{Datelike, Months, NaiveDate, Utc};
 use futures::StreamExt;
-use mongodb::bson::{doc, oid::ObjectId};
+use mongodb::bson::{doc, oid::ObjectId, Document};
 
 use crate::auth::EmpresaSession;
 use crate::models::cliente::Cliente;
@@ -194,6 +194,46 @@ async fn cargar_cartera(
         // Etiqueta "YYYY-MM" del mes del pago (fecha "YYYY-MM-DD").
         if let Some(mes) = pago.fecha.get(..7) {
             *entrada.cobrado_por_mes.entry(mes.to_string()).or_insert(0.0) += pago.monto;
+        }
+    }
+
+    // Ola 8 (E1): reconcilia el contador operativo `cobrado` — campo BSON crudo
+    // del plan (no vive en `PlanPago` para no romper el literal de tests de
+    // `pdf.rs`, archivo de otro dueño) — contra el ledger. Solo al alza
+    // (`$max`): bajar el contador a un ledger que aún no incluye un pago en
+    // vuelo clobbearía una reserva atómica concurrente. Best-effort: si falla,
+    // la lectura responde igual con el ledger.
+    let mut operativo: HashMap<String, f64> = HashMap::new();
+    let proyeccion = mongodb::options::FindOptions::builder()
+        .projection(doc! { "cobrado": 1 })
+        .build();
+    let mut cursor = db
+        .collection::<Document>("planes_pago")
+        .find(doc! { "empresa": correo }, Some(proyeccion))
+        .await?;
+    while let Some(d) = cursor.next().await {
+        let d = d?;
+        if let Ok(oid) = d.get_object_id("_id") {
+            operativo.insert(oid.to_hex(), d.get_f64("cobrado").unwrap_or(0.0));
+        }
+    }
+    let coll_planes = db.collection::<PlanPago>("planes_pago");
+    for plan in planes.iter() {
+        let Some(id) = &plan.id else { continue };
+        let hex = id.to_hex();
+        let actual = operativo.get(&hex).copied().unwrap_or(0.0);
+        let ledger = pagos.get(&hex).map(|pp| pp.total).unwrap_or(0.0);
+        if ledger > actual + 1e-9 {
+            if let Err(e) = coll_planes
+                .update_one(
+                    doc! { "_id": id, "empresa": correo },
+                    doc! { "$max": { "cobrado": ledger } },
+                    None,
+                )
+                .await
+            {
+                eprintln!("⚠️ No se pudo reconciliar `cobrado` del plan {hex}: {e}");
+            }
         }
     }
     Ok((planes, pagos))
@@ -653,6 +693,59 @@ pub async fn obtener_creditos(
     Json(serde_json::json!({ "status": "success", "creditos": creditos }))
 }
 
+/// Ola 8 (E1): longitud máxima de la `nota` de un abono (O2 del auditor).
+const NOTA_MAX: usize = 280;
+
+/// Acota la nota a `NOTA_MAX` chars (no bytes, para no partir un carácter).
+fn acotar_nota(nota: Option<&str>) -> Option<String> {
+    nota.map(|n| n.chars().take(NOTA_MAX).collect())
+}
+
+/// Ola 8 (E1): reserva `monto` en el contador `cobrado` del plan de forma
+/// atómica, con guard `cobrado + monto <= pago_mensual * plazo`. Sin
+/// transacciones (mongod standalone). `Some(true)` reservó; `Some(false)` el
+/// guard no matcheó (saldo agotado o carrera perdida); `None` error de Mongo.
+async fn reservar_cobrado(
+    client: &mongodb::Client,
+    correo: &str,
+    plan_id: &ObjectId,
+    monto: f64,
+) -> Option<bool> {
+    let filtro = doc! {
+        "_id": plan_id,
+        "empresa": correo,
+        "$expr": { "$lte": [
+            { "$add": [ { "$ifNull": ["$cobrado", 0.0] }, monto ] },
+            { "$multiply": ["$pago_mensual", "$plazo_meses"] },
+        ] },
+    };
+    match client
+        .database("pymza")
+        .collection::<PlanPago>("planes_pago")
+        .find_one_and_update(filtro, doc! { "$inc": { "cobrado": monto } }, None)
+        .await
+    {
+        Ok(Some(_)) => Some(true),
+        Ok(None) => Some(false),
+        Err(e) => {
+            eprintln!("🚨 ERROR AL RESERVAR COBRADO: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Deshace una reserva (best-effort) cuando el insert del `Pago` falla.
+async fn revertir_reserva(client: &mongodb::Client, plan_id: &ObjectId, monto: f64) {
+    if let Err(e) = client
+        .database("pymza")
+        .collection::<PlanPago>("planes_pago")
+        .update_one(doc! { "_id": plan_id }, doc! { "$inc": { "cobrado": -monto } }, None)
+        .await
+    {
+        eprintln!("🚨 ERROR AL REVERTIR RESERVA DE COBRADO: {:?}", e);
+    }
+}
+
 /// Registra el pago de una cuota (ola 4). Validaciones en orden: plan existe y
 /// es del tenant (404), cuota en 1..=plazo (400), cuota no pagada (400), monto
 /// igual a pago_mensual con tolerancia de 1 centavo (400). Después inserta,
@@ -698,6 +791,19 @@ pub async fn registrar_pago(
             &format!("El monto debe ser igual al pago mensual del plan (${:.2})", plan.pago_mensual),
         ));
     }
+    let Some(oid) = plan.id else {
+        return Err(error_status(StatusCode::NOT_FOUND, "Plan no encontrado"));
+    };
+
+    // Ola 8 (E1): reserva atómica antes del insert (cierra la carrera de pagos
+    // concurrentes que rebasaban la deuda).
+    match reservar_cobrado(&client, &sesion.correo, &oid, payload.monto).await {
+        Some(true) => {}
+        Some(false) => {
+            return Err(error_status(StatusCode::BAD_REQUEST, "El plan ya está liquidado"))
+        }
+        None => return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error interno")),
+    }
 
     let pago = Pago {
         plan_id: plan.id.clone().unwrap_or_default(),
@@ -711,6 +817,7 @@ pub async fn registrar_pago(
     };
     if let Err(e) = client.database("pymza").collection::<Pago>("pagos").insert_one(pago, None).await {
         eprintln!("🚨 ERROR AL GUARDAR PAGO: {:?}", e);
+        revertir_reserva(&client, &oid, payload.monto).await;
         return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error al registrar el pago"));
     }
 
@@ -781,6 +888,19 @@ pub async fn registrar_abono(
     if payload.monto > saldo_actual + 0.01 {
         return Err(error_status(StatusCode::BAD_REQUEST, "El abono excede el saldo pendiente"));
     }
+    let Some(oid) = plan.id else {
+        return Err(error_status(StatusCode::NOT_FOUND, "Plan no encontrado"));
+    };
+
+    // Ola 8 (E1): reserva atómica antes del insert. Si otra petición consumió
+    // el saldo entre la lectura y aquí, el guard no matchea → 400.
+    match reservar_cobrado(&client, &sesion.correo, &oid, payload.monto).await {
+        Some(true) => {}
+        Some(false) => {
+            return Err(error_status(StatusCode::BAD_REQUEST, "El abono excede el saldo pendiente"))
+        }
+        None => return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error interno")),
+    }
 
     let pago = Pago {
         plan_id: plan.id.clone().unwrap_or_default(),
@@ -790,10 +910,11 @@ pub async fn registrar_abono(
         monto: payload.monto,
         fecha: Utc::now().format("%Y-%m-%d").to_string(),
         tipo: "abono".to_string(),
-        nota: payload.nota.clone(),
+        nota: acotar_nota(payload.nota.as_deref()),
     };
     if let Err(e) = client.database("pymza").collection::<Pago>("pagos").insert_one(pago, None).await {
         eprintln!("🚨 ERROR AL GUARDAR ABONO: {:?}", e);
+        revertir_reserva(&client, &oid, payload.monto).await;
         return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error al registrar el abono"));
     }
 
