@@ -13,8 +13,8 @@ Colecciones Mongo usadas por los endpoints: `empresas`, `clientes`, `planes_pago
 El login devuelve un **JWT real** (HS256, firmado con `JWT_SECRET`, caducidad 24h)
 con claims `sub=<correo>`, `nombre=<nombre_empresa>` y `exp` (timestamp unix).
 
-- Todas las rutas salvo `POST /api/login` y `POST /api/empresas` **requieren** el
-  header `Authorization: Bearer <token>`.
+- Todas las rutas salvo `POST /api/login`, `POST /api/empresas` y
+  `GET /api/novedades` **requieren** el header `Authorization: Bearer <token>`.
 - Si el token falta, es inválido, está malformado o expirado → `401`:
   ```json
   {
@@ -41,8 +41,8 @@ descarta, no rompe el arranque.
 
 ## Rate limit — rutas públicas (ola 6)
 
-`POST /api/login` y `POST /api/empresas` tienen un límite por IP
-(`tower-governor`): **10 peticiones por segundo con ráfaga de 20** (defaults),
+`POST /api/login`, `POST /api/empresas` y `GET /api/novedades` tienen un límite
+por IP (`tower-governor`): **10 peticiones por segundo con ráfaga de 20** (defaults),
 configurable por env `RATE_LIMIT_RPS` / `RATE_LIMIT_BURST` (una env vacía,
 inválida o `0` usa el default). Las rutas protegidas NO lo tienen: la sesión
 JWT ya las blinda contra el brute-force.
@@ -481,6 +481,13 @@ Autoriza un crédito ya evaluado: inserta el plan de pago y actualiza (upsert) l
 `plan_id` es el hex del ObjectId insertado en `planes_pago`; el frontend lo usa
 para registrar pagos (también se expone como `_id` en `GET /api/creditos`).
 
+**Ola 8 (E2):** `pago_mensual` y `tasa_interes` del body se siguen aceptando por
+compatibilidad pero **se ignoran**: el backend recalcula
+`tasa = tasa_por_plazo(plazo)` y
+`pago_mensual = round(monto_total × (1 + tasa) / plazo, 2)` y persiste esos
+valores. La deuda (`pago_mensual × plazo`) queda así determinada por
+`monto_total` + `plazo`, nunca por el body.
+
 **Respuesta (error al guardar el plan de pago):**
 ```json
 { "status": "error", "message": "Error al guardar el plan de pago" }
@@ -552,7 +559,15 @@ la empresa del token; el tenant sale del token, nunca del body.
 }
 ```
 
-**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha, tipo: "cuota" }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió) y `dashboard_stats` (upsert recalculado).
+**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha, tipo: "cuota" }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió y reserva el contador `cobrado`) y `dashboard_stats` (upsert recalculado).
+
+**Concurrencia (ola 8, E1):** antes de insertar, el handler **reserva de forma
+atómica** el monto en el contador `cobrado` del plan con un guard
+`$expr: cobrado + monto <= pago_mensual × plazo` (`find_one_and_update` + `$inc`,
+sin transacciones). Si dos pagos concurrentes compiten por el mismo saldo, los
+que no caben reciben `400` y no insertan nada. Si el insert falla (incluido el
+`E11000` del índice único parcial de `plan_id+cuota`), se revierte el `$inc` y
+se devuelve `500`.
 
 ### Semántica de saldo y estado (ola 7)
 
@@ -566,6 +581,13 @@ Todo se calcula por **dinero**, no por cuotas marcadas:
 - `estado`: `Liquidado` si `saldo <= 0.01`; si no, `Moroso` si `cuotas_vencidas > 0`; si no, `Activo`.
 
 `estado`, `cobrado`, `saldo`, `cuotas_pagadas` y `cuotas_vencidas` se **recalculan en lectura**; el `estado` persistido en `planes_pago` es solo caché. Los pagos guardados antes de esta ola (sin `tipo`) se leen como `"cuota"`, así que el saldo/estado de los planes viejos no cambia.
+
+**Ola 8 (E1):** `planes_pago` guarda además un contador operativo `cobrado`
+(campo crudo, no movido por el ledger) que se reserva de forma atómica antes de
+cada pago/abono. Al leer la cartera se **reconcilia al alza** contra la suma del
+ledger (`$max`, best-effort), de modo que un plan legacy (sin el campo) queda
+corregido en su primera lectura. El ledger (`pagos`) sigue siendo la verdad de
+auditoría; el contador solo evita que N pagos concurrentes rebasen la deuda.
 
 ---
 
@@ -586,6 +608,8 @@ Ola 7 — registra un **abono parcial** (pago a cuenta) que baja el saldo **sin 
 
 `nota` es opcional.
 
+**Ola 8:** `nota` se acota a **280 caracteres** (se recorta, nunca rechaza).
+
 **Validaciones (en orden):**
 1. El plan existe y pertenece a la empresa del token → si no, `404`
    ```json
@@ -604,9 +628,13 @@ Ola 7 — registra un **abono parcial** (pago a cuenta) que baja el saldo **sin 
    { "status": "error", "message": "El abono excede el saldo pendiente" }
    ```
 
+**Concurrencia (ola 8, E1):** igual que en `POST /api/creditos/pagos`, el abono
+reserva el `cobrado` del plan de forma atómica antes de insertar. N abonos
+concurrentes nunca suman más que la deuda: los que no caben reciben `400`.
+
 **Respuesta (éxito):** la misma shape que `POST /api/creditos/pagos` (el plan con `cobrado`/`saldo` recalculados y el `estado` sin cambios si aún hay saldo).
 
-**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota: 0, monto, fecha, tipo: "abono", nota? }`), `planes_pago` (actualiza `estado` si quedó liquidado) y `dashboard_stats` (upsert recalculado).
+**Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota: 0, monto, fecha, tipo: "abono", nota? }`), `planes_pago` (actualiza `estado` si quedó liquidado y reserva `cobrado`) y `dashboard_stats` (upsert recalculado).
 
 ---
 
@@ -706,6 +734,12 @@ calcula en memoria sobre los planes y pagos de la empresa del token.
 **Requiere:** `Authorization: Bearer <token>` — el resumen sale del tenant
 del token; los datos nunca cruzan entre empresas.
 
+**Query params (ola 8, opcionales):** `desde=YYYY-MM-DD&hasta=YYYY-MM-DD`. Si
+ambos son válidos, la serie `cobrado_vs_por_cobrar` usa como buckets los meses
+de esa ventana y solo cuenta pagos/cuotas con fecha dentro de ella. Sin ellos se
+conservan los 6 meses (actual + 5 previos). El resto de las gráficas es estado
+actual y no depende de la ventana.
+
 **Respuesta (éxito):**
 ```json
 {
@@ -740,21 +774,29 @@ del token; los datos nunca cruzan entre empresas.
 ```
 
 Definiciones exactas:
-- `cobrado_vs_por_cobrar` — 6 meses: el actual + 5 previos, ascendente
-  (`mes` = "YYYY-MM"). `cobrado` = pagos registrados del mes; `por_cobrar` =
-  cuotas esperadas de ese mes (vencimiento en el mes, sin pago) en planes no
+- `cobrado_vs_por_cobrar` — sin ventana: 6 meses (actual + 5 previos,
+  ascendente, `mes` = "YYYY-MM"); con `?desde&hasta`: los meses de la ventana.
+  `cobrado` = pagos/abonos con fecha dentro de la ventana (o del mes); `por_cobrar`
+  = cuotas esperadas de esa ventana (vencimiento en ella, sin pago) en planes no
   liquidados.
-- `tasa_morosidad` — f64 0..1 = planes Moroso / planes no liquidados (0 si no
-  hay planes no liquidados).
+- `tasa_morosidad` — f64 0..1 **por dinero** (ola 8): `cartera_vencida /
+  capital_colocado`, donde vencida = suma de `saldo` de planes Moroso y colocado
+  = suma de `monto_total` de planes no liquidados (0 si el capital colocado es 0).
 - `flujo_proyectado` — monto de las cuotas que vencen en ≤30 / ≤60 / ≤90 días
-  (ventanas acumulativas, hoy incluido) de planes Activo o Moroso.
+  (ventanas acumulativas, hoy incluido) de planes con estado recalculado Activo o
+  Moroso.
 - `aging` — saldo vencido por antigüedad de la cuota impaga (días desde su
-  vencimiento): 1–30 → "0-30", 31–60, 61–90, >90 → "90+".
+  vencimiento): 1–30 → "0-30", 31–60, 61–90, >90 → "90+". Solo planes no
+  liquidados.
 - `top_deudores` — máx 10, saldo = pago_mensual × plazo − pagos registrados,
   descendente; `nombre` viene de `clientes` por `curp` (si el cliente ya no
   existe, el curp hace de nombre).
 - `distribucion_montos` — nº de planes por `monto_total`: <1000 → "0-1k",
   <5000 → "1k-5k", ≥5000 → "5k+".
+
+**Estado recalculado (ola 8, cierra O1):** todas las particiones (aging,
+morosidad, flujo, top, distribución) usan el estado recalculado en lectura, no
+el `estado` persistido — un plan liquidado por abonos ya no aparece como moroso.
 
 **Colecciones Mongo:** `planes_pago`, `pagos` y `clientes` (solo lectura).
 
@@ -762,9 +804,15 @@ Definiciones exactas:
 
 ## GET `/api/dashboard` — protegida
 
-Estadísticas del dashboard de la empresa autenticada.
+Estadísticas del dashboard de la empresa autenticada. **Ola 8:** se calculan en
+vivo desde la cartera del tenant (el `dashboard_stats` persistido deja de ser la
+fuente; puede seguir escribiéndose por compat).
 
 **Requiere:** `Authorization: Bearer <token>` — las stats se filtran por `empresa = <correo del token>`; la empresa se lee del token, ya no de la URL.
+
+**Query params (ola 8, opcionales):** `desde=YYYY-MM-DD&hasta=YYYY-MM-DD`
+(ambos requeridos para formar ventana). `cobrado_periodo` solo suma pagos/abonos
+con fecha dentro de la ventana; sin ventana usa el histórico completo.
 
 **Respuesta (con datos):**
 ```json
@@ -774,12 +822,29 @@ Estadísticas del dashboard de la empresa autenticada.
     "empresa": "demo@pymza.mx",
     "creditos_activos": 1,
     "capital_prestado": 10600.0,
-    "proximos_cobros": 6
+    "proximos_cobros": 6,
+    "capital_colocado": 10600.0,
+    "cobrado_periodo": 1766.67,
+    "por_cobrar_neto": 8833.35,
+    "cartera_vencida": 8833.35,
+    "tasa_morosidad": 0.8333
   }
 }
 ```
 
-**Respuesta (sin registro previo — devuelve ceros):**
+Definiciones (todas calculadas desde `planes_pago` + `pagos` del tenant):
+- `capital_colocado` — suma de `monto_total` de planes **no liquidados**.
+- `cobrado_periodo` — suma de pagos/abonos con `fecha` dentro de la ventana
+  (histórico si no se manda ventana).
+- `por_cobrar_neto` — suma de `saldo` de planes no liquidados.
+- `cartera_vencida` — suma de `saldo` de planes con estado recalculado `Moroso`.
+- `tasa_morosidad` — `cartera_vencida / capital_colocado` (**por dinero**, no por
+  número de planes); 0 si no hay capital colocado.
+- Los 3 campos viejos se conservan: `creditos_activos` = planes Activo o Moroso,
+  `capital_prestado` = suma de `monto_total` de todos los planes,
+  `proximos_cobros` = cuotas que vencen en ≤30 días de planes no liquidados.
+
+**Respuesta (sin planes — devuelve ceros):**
 ```json
 {
   "status": "success",
@@ -787,12 +852,49 @@ Estadísticas del dashboard de la empresa autenticada.
     "empresa": "demo@pymza.mx",
     "creditos_activos": 0,
     "capital_prestado": 0.0,
-    "proximos_cobros": 0
+    "proximos_cobros": 0,
+    "capital_colocado": 0.0,
+    "cobrado_periodo": 0.0,
+    "por_cobrar_neto": 0.0,
+    "cartera_vencida": 0.0,
+    "tasa_morosidad": 0.0
   }
 }
 ```
 
-**Colección Mongo:** `dashboard_stats` (busca por `empresa`).
+**Colección Mongo:** `planes_pago` y `pagos` (lectura del tenant). `dashboard_stats`
+ya no es fuente de estos KPIs.
+
+---
+
+## GET `/api/novedades` — pública (ola 8)
+
+Changelog estático para la campanita "what's new" del frontend. **Sin JWT**
+(comparte el rate limit por IP de las rutas públicas) y sin datos de ninguna
+empresa.
+
+**Respuesta:**
+```json
+{
+  "status": "success",
+  "version": "0.8.0",
+  "novedades": [
+    {
+      "fecha": "2026-10-06",
+      "titulo": "Abonos a prueba de concurrencia",
+      "detalle": "Los abonos y pagos concurrentes ya no pueden rebasar la deuda…"
+    }
+  ]
+}
+```
+
+- `version` — const `VERSION` de `backend/src/novedades.rs`; se bumpea por
+  release. El frontend la compara con su `APP_VERSION` compilada: si la del
+  servidor es mayor, muestra "hay una actualización disponible — recarga".
+- `novedades` — hitos (fecha, título, detalle) ordenados del más reciente al más
+  antiguo.
+
+**Colección Mongo:** ninguna.
 
 ---
 
