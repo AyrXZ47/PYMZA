@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use crate::api::token_borrar;
 use crate::{MenuState, VistaPublica};
+use crate::components::novedades::CampanitaNovedades;
 use crate::components::theme_toggle::ThemeToggle;
 
 #[component]
@@ -22,6 +23,7 @@ pub fn Sidebar(
                 ThemeToggle {}
             }
             div { class: "text-slate-500 text-xs mb-6 text-center px-2 dark:text-slate-400", "{current_company}" }
+            CampanitaNovedades {}
             ul { class: "flex flex-col w-full gap-1",
                 li {
                     class: format!("p-3 rounded-lg cursor-pointer flex items-center transition-colors {}",

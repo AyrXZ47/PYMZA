@@ -4,6 +4,7 @@ pub mod charts;
 pub mod dashboard;
 pub mod landing;
 pub mod login;
+pub mod novedades;
 pub mod plan_modal;
 pub mod registro;
 pub mod sidebar;

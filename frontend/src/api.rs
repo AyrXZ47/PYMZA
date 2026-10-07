@@ -20,6 +20,14 @@ pub const TOKEN_STORAGE_KEY: &str = "pymza_token";
 /// Clave de localStorage de la preferencia de tema (solo se usa en wasm).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub const THEME_STORAGE_KEY: &str = "pymza_theme";
+/// Versión compilada del frontend. Se bumpea a mano junto con la de
+/// `backend/src/novedades.rs`; con la del servidor mayor, el banner de recarga.
+// ponytail: versión duplicada en dos archivos (plan ola 8). Techo: inyectarla
+// por env en build (Dockerfiles). Solo anuncia a builds que ya traen la feature.
+pub const APP_VERSION: &str = "0.8.0";
+/// Clave de localStorage con la última versión de novedades ya vista (wasm).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub const NOVEDADES_STORAGE_KEY: &str = "pymza_novedades_v";
 
 pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -467,6 +475,108 @@ pub async fn obtener_resumen(
         .await
         .map_err(|e| format!("Respuesta inválida del servidor: {e}"))?;
     parsear_resumen(&data).ok_or_else(|| "No se pudo leer el resumen de cartera".to_string())
+}
+
+// --- Novedades ("what's new", ola 8): endpoint público, sin JWT. ---
+
+/// Entrada del changelog devuelta por `GET /api/novedades`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Novedad {
+    pub fecha: String,
+    pub titulo: String,
+    pub detalle: String,
+}
+
+/// Respuesta de `GET /api/novedades`: versión del servidor + changelog.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Novedades {
+    pub version: String,
+    pub novedades: Vec<Novedad>,
+}
+
+/// Parseo puro del body de novedades (testeable en host).
+pub fn parsear_novedades(data: &serde_json::Value) -> Option<Novedades> {
+    if data["status"] == "success" {
+        serde_json::from_value(data.clone()).ok()
+    } else {
+        None
+    }
+}
+
+/// Pide el changelog público. Sin JWT: no toca la sesión. Error si la red o el
+/// parseo fallan (la campanita lo ignora, la app no se rompe).
+pub async fn obtener_novedades() -> Result<Novedades, String> {
+    let res = http_client()
+        .get(format!("{API_BASE}/api/novedades"))
+        .send()
+        .await
+        .map_err(|e| format!("Sin conexión con el servidor: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("No se pudieron leer las novedades (HTTP {})", res.status()));
+    }
+    let data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida del servidor: {e}"))?;
+    parsear_novedades(&data).ok_or_else(|| "No se pudieron leer las novedades".to_string())
+}
+
+/// `true` si `servidor` es una versión numérica mayor que `app` (0.8.1 > 0.8.0).
+/// Versiones no numéricas → false (nunca anunciar un banner por datos raros).
+pub fn version_es_mayor(servidor: &str, app: &str) -> bool {
+    fn partes(v: &str) -> Option<Vec<u64>> {
+        v.trim()
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+            .filter(|p| !p.is_empty())
+    }
+    let (Some(s), Some(a)) = (partes(servidor), partes(app)) else {
+        return false;
+    };
+    for i in 0..s.len().max(a.len()) {
+        let sv = s.get(i).copied().unwrap_or(0);
+        let av = a.get(i).copied().unwrap_or(0);
+        if sv != av {
+            return sv > av;
+        }
+    }
+    false
+}
+
+/// Persiste la versión de novedades ya vista (no-op en host).
+pub fn novedades_vistas_guardar(version: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dioxus::document::eval(&js_set_item(NOVEDADES_STORAGE_KEY, version));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = version;
+}
+
+/// Lee la última versión de novedades vista (solo wasm; host → None).
+pub async fn novedades_vistas_leer() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let eval = dioxus::document::eval(&js_get_item(NOVEDADES_STORAGE_KEY));
+        let valor = eval.await.ok()?.as_str()?.to_string();
+        (!valor.is_empty()).then_some(valor)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// Recarga la página (banner de actualización disponible). No-op en host.
+pub fn recargar_pagina() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = dioxus::document::eval("window.location.reload();");
+    }
 }
 
 /// Request a `POST /api/creditos/pagos`: registra el pago de la `cuota` de un
@@ -1379,5 +1489,148 @@ mod tests {
         assert!(js.contains("\"contrato-X.pdf\""), "nombre como string JSON");
         assert!(js.contains("a.download"));
         assert!(js.contains("URL.revokeObjectURL"), "limpia el object URL");
+    }
+
+    // --- Contrato API ola 8: periodo, dashboard y novedades. ---
+
+    #[test]
+    fn rango_periodo_ventanas_moviles_terminando_hoy() {
+        let hoy = "2026-10-06";
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Semana, hoy),
+            ("2026-09-30".to_string(), hoy.to_string())
+        );
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Mes, hoy),
+            ("2026-09-07".to_string(), hoy.to_string())
+        );
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Bimestre, hoy),
+            ("2026-08-08".to_string(), hoy.to_string())
+        );
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Trimestre, hoy),
+            ("2026-07-09".to_string(), hoy.to_string())
+        );
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Semestre, hoy),
+            ("2026-04-10".to_string(), hoy.to_string())
+        );
+    }
+
+    #[test]
+    fn rango_periodo_cruza_fin_de_ano() {
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Semana, "2026-01-03"),
+            ("2025-12-28".to_string(), "2026-01-03".to_string())
+        );
+    }
+
+    #[test]
+    fn rango_periodo_hoy_invalido_no_filtra() {
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Mes, ""),
+            (String::new(), String::new())
+        );
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Mes, "06/10/2026"),
+            (String::new(), String::new())
+        );
+        assert_eq!(
+            rango_periodo(PresetPeriodo::Mes, "2026-13-01"),
+            (String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn presets_lista_etiquetas_y_default_mes() {
+        let etiquetas: Vec<&str> = PresetPeriodo::TODOS.iter().map(|p| p.etiqueta()).collect();
+        assert_eq!(etiquetas, ["Semana", "Mes", "Bimestre", "Trimestre", "Semestre"]);
+        assert_eq!(PresetPeriodo::TODOS[1], PresetPeriodo::Mes, "default = mes");
+    }
+
+    #[test]
+    fn ruta_con_periodo_omite_query_sin_fechas() {
+        assert_eq!(
+            ruta_con_periodo("/api/dashboard", "2026-09-07", "2026-10-06"),
+            "/api/dashboard?desde=2026-09-07&hasta=2026-10-06"
+        );
+        assert_eq!(ruta_con_periodo("/api/dashboard", "", ""), "/api/dashboard");
+        assert_eq!(ruta_con_periodo("/api/dashboard", "2026-09-07", ""), "/api/dashboard");
+    }
+
+    #[test]
+    fn parsear_dashboard_con_shape_del_contrato() {
+        let data = serde_json::json!({
+            "status": "success",
+            "stats": {
+                "empresa": "Abarrotes Don Pepe",
+                "creditos_activos": 4,
+                "capital_prestado": 12000.0,
+                "proximos_cobros": 3,
+                "capital_colocado": 9000.0,
+                "cobrado_periodo": 1500.0,
+                "por_cobrar_neto": 7500.0,
+                "cartera_vencida": 900.0,
+                "tasa_morosidad": 0.1
+            }
+        });
+        let s = parsear_dashboard(&data).expect("el shape del contrato debe parsear");
+        assert_eq!(s.empresa, "Abarrotes Don Pepe");
+        assert_eq!(s.capital_colocado, 9000.0);
+        assert_eq!(s.cobrado_periodo, 1500.0);
+        assert_eq!(s.por_cobrar_neto, 7500.0);
+        assert_eq!(s.cartera_vencida, 900.0);
+        assert_eq!(s.tasa_morosidad, 0.1);
+    }
+
+    #[test]
+    fn parsear_dashboard_viejo_sin_kpis_cae_a_default() {
+        let data = serde_json::json!({
+            "status": "success",
+            "stats": { "empresa": "Vieja S.A.", "creditos_activos": 1 }
+        });
+        let s = parsear_dashboard(&data).expect("stats viejas deben parsear");
+        assert_eq!(s.empresa, "Vieja S.A.");
+        assert_eq!(s.capital_colocado, 0.0);
+        assert_eq!(s.tasa_morosidad, 0.0);
+    }
+
+    #[test]
+    fn parsear_dashboard_status_error_es_none() {
+        assert_eq!(parsear_dashboard(&serde_json::json!({ "status": "error" })), None);
+    }
+
+    #[test]
+    fn version_es_mayor_compara_segmentos_numericos() {
+        assert!(version_es_mayor("0.8.1", "0.8.0"));
+        assert!(version_es_mayor("0.9", "0.8.9"));
+        assert!(version_es_mayor("1.0.0", "0.8.0"));
+        assert!(version_es_mayor("0.8.0.1", "0.8.0"));
+        assert!(!version_es_mayor("0.8.0", "0.8.0"));
+        assert!(!version_es_mayor("0.7.9", "0.8.0"));
+        assert!(!version_es_mayor("abc", "0.8.0"), "no numérica no anuncia");
+        assert!(!version_es_mayor("", "0.8.0"));
+    }
+
+    #[test]
+    fn parsear_novedades_con_shape_del_contrato() {
+        let data = serde_json::json!({
+            "status": "success",
+            "version": "0.8.0",
+            "novedades": [
+                { "fecha": "2026-10-06", "titulo": "Tablero honesto", "detalle": "KPIs por periodo" }
+            ]
+        });
+        let n = parsear_novedades(&data).expect("el shape del contrato debe parsear");
+        assert_eq!(n.version, "0.8.0");
+        assert_eq!(n.novedades.len(), 1);
+        assert_eq!(n.novedades[0].titulo, "Tablero honesto");
+    }
+
+    #[test]
+    fn parsear_novedades_status_error_o_vacio_es_none() {
+        assert_eq!(parsear_novedades(&serde_json::json!({ "status": "error" })), None);
+        assert_eq!(parsear_novedades(&serde_json::json!({})), None);
     }
 }
