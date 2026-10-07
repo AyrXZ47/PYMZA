@@ -34,7 +34,26 @@ pub fn fmt_monto(v: f64) -> String {
     }
 }
 
-/// Semáforo de morosidad: <5% verde, 5-20% ámbar, >20% rojo (clases Tailwind).
+/// Monto exacto con separador de miles y 2 decimales: "$12,345.67". Se usa en
+/// los KPIs; las gráficas usan `fmt_monto` (compacto para caber en la etiqueta).
+pub fn fmt_moneda(v: f64) -> String {
+    let neg = v < 0.0;
+    let centavos = (v.abs() * 100.0).round() as u64;
+    let digitos = (centavos / 100).to_string();
+    let frac = centavos % 100;
+    let n = digitos.len();
+    let mut agrupado = String::new();
+    for (i, c) in digitos.chars().enumerate() {
+        if i > 0 && (n - i) % 3 == 0 {
+            agrupado.push(',');
+        }
+        agrupado.push(c);
+    }
+    format!("{}${agrupado}.{frac:02}", if neg { "-" } else { "" })
+}
+
+/// Semáforo de morosidad money-based (`cartera_vencida / capital_colocado`):
+/// <5% verde, 5-20% ámbar, >20% rojo (clases Tailwind).
 pub fn semaforo_morosidad(tasa: f64) -> &'static str {
     if tasa < 0.05 {
         "text-emerald-600 dark:text-emerald-400"
@@ -132,11 +151,11 @@ pub fn BarraApilada(datos: Vec<DatoMes>) -> Element {
             div { class: "mt-2 flex items-center gap-4 text-xs text-slate-600 dark:text-slate-300",
                 div { class: "flex items-center gap-1.5",
                     div { class: "h-2.5 w-2.5 rounded-sm bg-emerald-500" }
-                    "Cobrado"
+                    "Cobrado (MXN)"
                 }
                 div { class: "flex items-center gap-1.5",
                     div { class: "h-2.5 w-2.5 rounded-sm bg-blue-500" }
-                    "Por cobrar"
+                    "Por cobrar (MXN)"
                 }
             }
         }
@@ -251,7 +270,7 @@ pub fn Donut(datos: Vec<DatoCategoria>) -> Element {
                             style: format!("background-color: {}", PALETA[i % 4]),
                             class: "h-2.5 w-2.5 rounded-full",
                         }
-                        {format!("{}: {}", d.etiqueta, d.valor)}
+                        {format!("{}: {} créditos", d.etiqueta, d.valor as i64)}
                     }
                 }
             }
@@ -313,6 +332,15 @@ mod tests {
         assert_eq!(fmt_monto(85.4), "$85");
         assert_eq!(fmt_monto(1234.5), "$1.2k");
         assert_eq!(fmt_monto(1_200_000.0), "$1.2M");
+    }
+
+    #[test]
+    fn fmt_moneda_agrupa_miles_y_dos_decimales() {
+        assert_eq!(fmt_moneda(0.0), "$0.00");
+        assert_eq!(fmt_moneda(12_345.678), "$12,345.68");
+        assert_eq!(fmt_moneda(1_000_000.0), "$1,000,000.00");
+        assert_eq!(fmt_moneda(999.5), "$999.50");
+        assert_eq!(fmt_moneda(-1_234.0), "-$1,234.00");
     }
 
     #[test]
