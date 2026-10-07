@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod models;
+mod novedades;
 mod ocr;
 mod otp;
 mod pdf;
@@ -19,6 +20,7 @@ use axum::{
 use tower_governor::{errors::GovernorError, governor::GovernorConfigBuilder, GovernorLayer};
 
 use auth::{cors_layer, jwt_secret, login_empresa, EmpresaSession};
+use novedades::obtener_novedades;
 use routes::cliente::{buscar_cliente, crear_cliente, reportar_cliente};
 use routes::credito::{
     autorizar_credito, descargar_contrato, evaluar_credito, obtener_creditos, obtener_dashboard,
@@ -123,6 +125,12 @@ async fn main() {
         .route(
             "/api/empresas",
             post(alta_empresa)
+                .layer(GovernorLayer { config: conf_governor })
+                .layer(HandleErrorLayer::new(error_governor)),
+        )
+        .route(
+            "/api/novedades",
+            get(obtener_novedades)
                 .layer(GovernorLayer { config: conf_governor })
                 .layer(HandleErrorLayer::new(error_governor)),
         )
