@@ -295,17 +295,27 @@ fn error_status(status: StatusCode, message: &str) -> (StatusCode, Json<serde_js
     (status, Json(serde_json::json!({ "status": "error", "message": message })))
 }
 
-/// Contrato del dominio (F1/F2, auditoría ola 6; plazos ola 7): el plazo debe
-/// ser 1, 3, 6, 9 o 12 meses y el monto positivo finito. Sin esto,
-/// `generar_plan_pagos` materializa un Vec de `plazo_meses` elementos
-/// (i32::MAX → ~86 GB → OOM con 1 request) y `autorizar` persiste el plan
-/// envenenado. Devuelve el mensaje del 400.
+/// Ola 8-fix (E2): tope de negocio de `monto_total` en MXN. Por encima,
+/// `pago_mensual_de` desborda a `inf` (el `*100` de `redondear2` desborda
+/// ~1e308) y Mongo persiste `pago_mensual: Infinity`, que corrompe el dashboard
+/// del tenant de forma permanente. 1e12 (un billón de pesos) no lo alcanza una
+/// PYME real y deja margen de sobra para el redondeo.
+const MONTO_MAX_MXN: f64 = 1e12;
+
+/// Contrato del dominio (F1/F2, auditoría ola 6; plazos ola 7; tope ola 8-fix):
+/// el plazo debe ser 1, 3, 6, 9 o 12 meses y el monto positivo, finito y
+/// ≤ `MONTO_MAX_MXN`. Sin esto, `generar_plan_pagos` materializa un Vec de
+/// `plazo_meses` elementos (i32::MAX → ~86 GB → OOM con 1 request) y
+/// `autorizar` persiste el plan envenenado. Devuelve el mensaje del 400.
 fn validar_plazo_y_monto(plazo_meses: i32, monto: f64) -> Option<&'static str> {
     if !matches!(plazo_meses, 1 | 3 | 6 | 9 | 12) {
         return Some("El plazo debe ser 1, 3, 6, 9 o 12 meses");
     }
     if !monto.is_finite() || monto <= 0.0 {
         return Some("El monto debe ser mayor a 0");
+    }
+    if monto > MONTO_MAX_MXN {
+        return Some("El monto excede el máximo permitido");
     }
     None
 }
@@ -688,6 +698,14 @@ pub async fn autorizar_credito(
     // `monto_total` + `plazo` (el body solo queda por compatibilidad).
     let tasa = tasa_por_plazo(payload.plazo_meses);
     let pago_mensual = pago_mensual_de(payload.monto_total, payload.plazo_meses);
+    // Ola 8-fix (E2): red de seguridad — jamás persistir `pago_mensual` no
+    // finito (un `Infinity` en Mongo congelaba la cartera y el contrato).
+    if !pago_mensual.is_finite() {
+        return Err(error_status(
+            StatusCode::BAD_REQUEST,
+            "El monto genera un pago mensual no finito",
+        ));
+    }
     let plan_pago = PlanPago {
         id: None, // Mongo lo genera al insertar
         empresa: sesion.correo.clone(),
@@ -1725,6 +1743,23 @@ mod tests {
         assert_eq!(validar_plazo_y_monto(4, 100.0), msg, "plazo fuera del catálogo");
         assert_eq!(validar_plazo_y_monto(6, -1.0), Some("El monto debe ser mayor a 0"));
         assert_eq!(validar_plazo_y_monto(6, 0.0), Some("El monto debe ser mayor a 0"));
+        // E2 ola 8-fix: no finito sigue siendo "mayor a 0" (mismo mensaje);
+        // finito pero por encima del tope → 400 propio; el tope exacto pasa.
+        assert_eq!(validar_plazo_y_monto(6, f64::INFINITY), Some("El monto debe ser mayor a 0"));
+        assert_eq!(validar_plazo_y_monto(6, 1e308), Some("El monto excede el máximo permitido"));
+        assert_eq!(
+            validar_plazo_y_monto(6, MONTO_MAX_MXN + 1.0),
+            Some("El monto excede el máximo permitido")
+        );
+        assert_eq!(validar_plazo_y_monto(6, MONTO_MAX_MXN), None);
+    }
+
+    #[test]
+    fn pago_mensual_en_el_tope_sigue_siendo_finito() {
+        // E2 ola 8-fix: con el tope, la fórmula nunca desborda a Infinity.
+        let pm = pago_mensual_de(MONTO_MAX_MXN, 1);
+        assert!(pm.is_finite(), "pago mensual no finito en el tope: {pm}");
+        assert!(pm > MONTO_MAX_MXN, "incluye el interés del 7% a 1 mes");
     }
 
     // Client sin servidor: la validación corre ANTES de cualquier acceso a
