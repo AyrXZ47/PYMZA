@@ -55,8 +55,8 @@ Constraints:
 | 6-fix | Hotfix release gate: F1/F2 (validación plazo/monto), S1 (Dockerfile.backend), S2 (CSS) | [x] auditada 2026-09-06 (APPROVED WITH EXCEPTIONS: A6-1 LOW → ola 7) — **release gate CERRADO**: F1/F2 corregidos en vivo, ambas imágenes Docker construyen (tesseract+spa, no-root), índice único verificado. V despliega con `docs/DEPLOY.md` |
 | 7 | Cobranza real y cartera usable: abonos, tasas 1 mes 7% escalonado, saldo/estado por dinero, contrato con abonos y liquidación, buscador+filtros+dos tablas en cartera, nombre del cliente | [x] auditada 2026-10-05 (APPROVED WITH EXCEPTIONS: E1/E2 MEDIUM → ola 8) — **desplegada a producción por V** (Railway) |
 | 8 | Tablero honesto + novedades + cierre E1/E2: KPIs con filtros de periodo, morosidad por dinero, gráficas corregidas, campanita "what's new", abono atómico y `autorizar` con montos recalculados | [x] auditada 2026-10-07 (APPROVED WITH EXCEPTIONS: E1/E2 MEDIUM + O1 LOW → ola 8-fix) |
-| 8-fix | Integridad de cobranza: contador `cobrado` recuperable, tope de `monto_total`/`pago_mensual` finito, aging/flujo por dinero y reparación de planes legacy con dinero inconsistente | [ ] **actual** |
-| 9 | Cumplimiento y marca PIGNUS: aviso de privacidad + ToS con checkbox, rebrand visible (PYMZA→PIGNUS), licencia propietaria y repo privado | [ ] |
+| 8-fix | Integridad de cobranza: contador `cobrado` recuperable, tope de `monto_total`/`pago_mensual` finito, aging/flujo por dinero y reparación de planes legacy con dinero inconsistente | [x] auditada 2026-10-07 (APPROVED WITH EXCEPTIONS: OBS1–OBS5 LOW → ola 9) — **en producción** |
+| 9 | Cumplimiento y marca PIGNUS: aviso de privacidad + ToS con checkbox, rebrand PYMZA→PIGNUS, licencia propietaria, repo privado, cierre OBS1–OBS5 y `próximos cobros` por ventana | [ ] **actual** |
 | 10 | Confianza y control: sub-usuarios por empresa (roles + auditoría de quién hizo qué), aval en alta de cliente, catálogo de productos con ID, editar/cancelar créditos | [ ] |
 | 11 | Dinero y verificación: Stripe (suscripción), validación de correo de empresa, Verificamex (CURP/teléfono), score real (adiós al 550 fijo) | [ ] |
 | 12 | Documentos y firma: firma digital (pad), contrato firmado por correo, documentos del cliente accesibles a la red con compresión automática | [ ] |
@@ -67,7 +67,91 @@ Constraints:
 
 ---
 
-## Ola 8-fix (actual): integridad de cobranza
+## Ola 9 (actual): PIGNUS — cumplimiento, marca y cierre de deuda
+
+Contexto: V entra al registro de marca (IMPI) y renombra el producto a **PIGNUS**.
+La 8-fix quedó APPROVED WITH EXCEPTIONS (OBS1–OBS5 LOW, owner planner) y V pidió
+corregir "próximos cobros" (hoy cuenta todo el futuro; debe ser ventana de 15/30
+días). Todo entra en una sola ola desplegable.
+
+### Alcance y contrato API ola 9
+
+**Cumplimiento (texto ya redactado por el planner):**
+
+- `aviso-privacidad-integral-2026-10.md` (raíz, versión 2026-10-07) es la fuente
+  canónica. Se renderiza como **página de texto** en la app (sin PDF, sin dep de
+  markdown) y se enlaza desde: el registro de empresa (checkbox **NO premarcado**
+  "He leído y acepto el Aviso de Privacidad y los Términos de Servicio") y el
+  footer de la landing.
+- **Términos de Servicio**: `docs/legal/terminos-de-servicio.md` (nuevo; borrador
+  del executor + revisión de V): limitación de responsabilidad del score (la
+  decisión de otorgar crédito es de la PYME), uso aceptable, propiedad
+  intelectual, suspensión, jurisdicción Zacatecas.
+- **Evidencia de aceptación** (backend): `POST /api/empresas` acepta
+  `acepta_aviso: true` + `aviso_version` y guarda en `empresas`
+  `{aviso_version, aceptado_en, ip}` (aditivo). El registro no se envía sin el
+  checkbox.
+
+**Rebrand PYMZA → PIGNUS:**
+
+- Strings visibles del frontend, `<title>`/meta, landing/login/registro, sidebar,
+  PDF del contrato (`pdf.rs`), `novedades.rs`, mensajes del backend, README/AGENTS/
+  plan y el symlink. **El tenant (correo) y el JWT no cambian.** Si V cambia de
+  dominio: re-verificar Meta y ajustar `ALLOWED_ORIGINS` + rebuild del frontend.
+- Licencia: `LICENSE-PROPRIETARY.md` ("todos los derechos reservados") + nota en
+  README; V es el único titular (confirmado). Repo privado + showcase: runbook del
+  planner (no es código).
+
+**Cierre de deuda (OBS1–OBS5 de la 8-fix):**
+
+- OBS1: `cargo clippy --all-targets` limpio (19 warnings hoy; no reportar 0/0 sin
+  evidencia).
+- OBS2: el `update_one` de reconciliación se condiciona en el **filtro**
+  (`reservas: {$in:[0,null]}` o `reserva_ts` viejo), no con lectura previa (TOCTOU).
+- OBS3: una reserva muerta con `cobrado == ledger` también limpia `reservas`.
+- OBS4: `bson_i64` acepta `Bson::Double`.
+- OBS5: prefijo literal `ponytail:` en el techo "sin transacciones".
+
+**Próximos cobros (petición de V):**
+
+- `GET /api/dashboard` añade `proximos_cobros` como **conteo de cuotas cuyo
+  vencimiento cae en la ventana** (param `?dias=`, 7/15/30, default 30), no del
+  total futuro, más su monto; excluye liquidados/cancelados. La tarjeta vuelve al
+  frontend con selector 15/30 días (ventana móvil).
+
+### Mapa de propiedad (ola 9)
+
+| Archivo/glob | Dueño |
+|---|---|
+| `backend/src/**` (clippy de kyc/otp/ocr/pdf incluido), `docs/API.md`, `docs/legal/terminos-de-servicio.md` | executor-1 |
+| `frontend/src/**`, `frontend/index.html`, `frontend/assets/tailwind.css`, `frontend/tailwind.css`, `README.md`, `AGENTS.md`, `aviso-privacidad-integral-2026-10.md`, `LICENSE-PROPRIETARY.md`, `PIGNUS.md` (symlink) | executor-2 |
+
+Fuera de ambos: `.workflow/**` (planner), `docs/DEPLOY.md`, `docs/ROADMAP.md`,
+`docs/INVESTIGACION.md`, `docker-compose.yml`, `.env*`, y `Dockerfile.*` salvo que
+el rebrand del `<head>` lo exija (reportar al planner).
+
+### Tareas
+
+- [ ] T1 (executor-1): OBS1–OBS5 + `proximos_cobros` por ventana + evidencia de aceptación + rebrand backend + ToS draft → brief `.workflow/briefs/wave9-executor-1.md`
+- [ ] T2 (executor-2): páginas aviso/ToS + checkbox en registro + rebrand visible + tarjeta próximos cobros + licencia/README → brief `.workflow/briefs/wave9-executor-2.md`
+
+### Arranque / integración / audit (ola 9)
+
+```bash
+git worktree add ../pymza-w9-e1 -b wave9-executor-1 main
+git worktree add ../pymza-w9-e2 -b wave9-executor-2 main
+# Integración: executor-1 (backend) → executor-2 (frontend)
+cd backend && MONGODB_URI=mongodb://127.0.0.1:27017 cargo build && cargo test && cargo clippy --all-targets
+cd frontend && cargo check --target wasm32-unknown-unknown && cargo test && ./tailwind.sh
+```
+
+Audit gate: security-audit (cero CRITICAL/HIGH); clippy limpio; aviso público sin
+secretos; el checkbox bloquea el registro y la evidencia se persiste; cero "PYMZA"
+visible (`rg -i pymza` solo en histórico/docs); `proximos_cobros` = solo la ventana.
+
+---
+
+## Ola 8-fix (histórica): integridad de cobranza
 
 Contexto: la ola 8 quedó APPROVED WITH EXCEPTIONS y las excepciones son
 integridad de dinero en producción (owner planner) → mini-ola de UN executor
@@ -923,3 +1007,17 @@ Ola 8 — auditoría, cumplimiento y re-segmentación (2026-10-07):
 | 2026-10-07 | **Bug de V** ("abono muy pequeño → venta de prueba a liquidados") entra a 8-fix como diagnóstico/reparación de planes legacy con `pago_mensual`/`tasa` fabricados (la ola 8 solo recalcula autorizaciones NUEVAS) | E2 pre-fix permitía deuda diminuta; esos planes siguen en Atlas y hay que detectarlos/repararlos |
 | 2026-10-07 | No confundir: el auditor de la ola 7 encontró E1/E2 (concurrencia/montos), NO el síntoma del abono pequeño; ese es de la nota de V y se atiende en 8-fix | Trazabilidad de hallazgos |
 | 2026-10-07 | Entorno de V: el `rustup` de NixOS tiene el wrapper `ld.lld` roto; builds/tests requieren `RUSTFLAGS="-C link-arg=-fuse-ld=bfd"` hasta repararlo (no es del repo) | Sin eso, integrador/auditor no corren el comando literal |
+
+Ola 8-fix — auditoría y cumplimiento PIGNUS (2026-10-07):
+
+| Fecha | Decisión | Por qué |
+|------|----------|-----|
+| 2026-10-07 | Ola 8-fix **APPROVED WITH EXCEPTIONS** (`.workflow/audits/wave8.md`): E1/E2/O1 de la ola 8 **cerradas** con evidencia en vivo + bug de V atendido por `reparar_planes.js`; 90 tests verdes; excepciones nuevas OBS1–OBS5 **LOW** → ola 9 | Las excepciones de dinero quedan cerradas; lo que resta es disciplina/hardening, no integridad |
+| 2026-10-07 | OBS1: clippy tiene 19 warnings (la ola 8 reportó 0/0 sin evidencia). Se corrige en ola 9 y se deja de reportar limpio sin comando | Evidencia sobre narración |
+| 2026-10-07 | OBS2/OBS3/OBS4: endurecer el reconciler (filtro condicional en vez de lectura previa), limpiar reservas muertas aunque `cobrado == ledger`, y `bson_i64` aceptar Double | Cierran TOCTOU y casos borde del contador recuperable |
+| 2026-10-07 | `reparar_planes.js` usa `APPLY=1` en vez de `--apply` (mongosh rechaza flags propios); semántica idéntica (dry-run no escribe) | Desviación aceptada y documentada |
+| 2026-10-07 | **LFPDPPP vigente = 20-mar-2025**; **INAI extinto** → protección de datos de particulares en la **Secretaría Anticorrupción y Buen Gobierno (SABG)**; datos financieros/patrimoniales exigen **consentimiento expreso** | El aviso de V citaba "iLoveCFDI.com", teléfono ajeno y no declaraba la transferencia a la red PIGNUS |
+| 2026-10-07 | **Aviso de privacidad integral reescrito** (versión 2026-10-07) con datos de V, modalidad texto+checkbox, y **transferencia a la red PIGNUS** declarada como consentimiento expreso; **burós = no hoy, con nuevo consentimiento si se integran** | El perfil compartido entre PYMES es el mayor riesgo legal y el corazón del producto |
+| 2026-10-07 | **Repo privado + showcase con historia nueva** (`git init`, un commit, sin `.git` clonado) y **rotar `JWT_SECRET`** como precaución; al privatizar, **re-autorizar Railway** (la GitHub App pierde acceso) | Nadie debe poder viajar la historia ni clonar el core; el showcase es solo cascarón |
+| 2026-10-07 | **`próximos cobros`** se corrige a ventana (7/15/30 días, default 30) y vuelve a la UI | Hoy suma el futuro completo, no lo que se cobra en las próximas semanas |
+| 2026-10-07 | **PIGNUS** reemplaza a PYMZA en todo lo visible; tenant/JWT/DB no cambian | El nombre del producto no vive en la clave de datos |
