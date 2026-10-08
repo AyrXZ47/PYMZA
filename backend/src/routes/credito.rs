@@ -127,11 +127,13 @@ fn cobrado_de(plan: &PlanPago, pagos_por_plan: &HashMap<String, PagosPlan>) -> f
         .unwrap_or(0.0)
 }
 
-/// Cuotas de un plan que vencen dentro de `dias` días (hoy incluido) sin pago.
-pub(crate) fn cuotas_por_vencer(plan: &PlanPago, cuotas_pagadas: &[i32], hoy: NaiveDate, dias: i32) -> i32 {
+/// Cuotas de un plan que vencen dentro de `dias` días (hoy incluido) y aún no
+/// están cubiertas POR DINERO (`cuotas_cubiertas`), no por cuota marcada — un
+/// abono parcial ya descuenta su parte (ola 8-fix, O1).
+pub(crate) fn cuotas_por_vencer(plan: &PlanPago, cubiertas: i32, hoy: NaiveDate, dias: i32) -> i32 {
     (1..=plan.plazo_meses)
         .filter(|n| {
-            !cuotas_pagadas.contains(n)
+            *n > cubiertas
                 && fecha_vencimiento(&plan.fecha, *n)
                     .map_or(false, |v| v >= hoy && (v - hoy).num_days() <= dias as i64)
         })
@@ -164,15 +166,6 @@ struct PagosPlan {
     cuotas: Vec<i32>,
     total: f64,
     por_fecha: HashMap<String, f64>,
-}
-
-/// Cuotas pagadas de un plan (del mapa de pagos del tenant).
-fn pagadas_de(plan: &PlanPago, pagos_por_plan: &HashMap<String, PagosPlan>) -> Vec<i32> {
-    plan.id
-        .as_ref()
-        .and_then(|id| pagos_por_plan.get(&id.to_hex()))
-        .map(|pp| pp.cuotas.clone())
-        .unwrap_or_default()
 }
 
 /// ponytail: un handler que carga planes + pagos del tenant y calcula en
@@ -289,7 +282,7 @@ async fn upsert_dashboard_stats(
     let proximos_cobros: i32 = planes
         .iter()
         .filter(|p| estado_plan(p, cobrado_de(p, pagos_por_plan), hoy) != "Liquidado")
-        .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, 30))
+        .map(|p| cuotas_por_vencer(p, cuotas_cubiertas(p, cobrado_de(p, pagos_por_plan)), hoy, 30))
         .sum();
 
     let coll = client.database("pymza").collection::<DashboardStats>("dashboard_stats");
@@ -477,9 +470,10 @@ fn resumen_cartera(
     }
     let mut por_cobrar = vec![0.0; etiquetas.len()];
     for plan in planes.iter().filter(|p| no_liquidado(p)) {
-        let pagadas = pagadas_de(plan, pagos_por_plan);
+        // Ola 8-fix (O1): cobertura por dinero, no por cuota marcada.
+        let cubiertas = cuotas_cubiertas(plan, cobrado_de(plan, pagos_por_plan));
         for n in 1..=plan.plazo_meses {
-            if pagadas.contains(&n) {
+            if n <= cubiertas {
                 continue;
             }
             if let Some(v) = fecha_vencimiento(&plan.fecha, n) {
@@ -522,18 +516,24 @@ fn resumen_cartera(
             let monto: f64 = planes
                 .iter()
                 .filter(|p| matches!(estado(p), "Activo" | "Moroso"))
-                .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, h) as f64 * p.pago_mensual)
+                .map(|p| {
+                    // Ola 8-fix (O1): flujo por dinero, no por cuota marcada.
+                    let cubiertas = cuotas_cubiertas(p, cobrado_de(p, pagos_por_plan));
+                    cuotas_por_vencer(p, cubiertas, hoy, h) as f64 * p.pago_mensual
+                })
                 .sum();
             serde_json::json!({ "horizonte": h, "monto": redondear2(monto) })
         })
         .collect();
 
     // Aging: saldo vencido por antigüedad de la cuota (días desde vencimiento).
+    // Ola 8-fix (O1): las cuotas cubiertas por dinero (abonos incluidos) no
+    // cuentan; antes un abono no bajaba el aging.
     let mut aging = vec![0.0; 4];
     for plan in planes.iter().filter(|p| no_liquidado(p)) {
-        let pagadas = pagadas_de(plan, pagos_por_plan);
+        let cubiertas = cuotas_cubiertas(plan, cobrado_de(plan, pagos_por_plan));
         for n in 1..=plan.plazo_meses {
-            if pagadas.contains(&n) {
+            if n <= cubiertas {
                 continue;
             }
             if let Some(v) = fecha_vencimiento(&plan.fecha, n) {
@@ -1144,7 +1144,7 @@ fn stats_dashboard(
     let proximos_cobros: i32 = planes
         .iter()
         .filter(|p| no_liquidado(p))
-        .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, 30))
+        .map(|p| cuotas_por_vencer(p, cuotas_cubiertas(p, cobrado_de(p, pagos_por_plan)), hoy, 30))
         .sum();
 
     let capital_colocado: f64 = planes
@@ -1481,11 +1481,11 @@ mod tests {
         let hoy = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
         // cuota 1 vence a 31 días, cuota 2 a 59, cuota 3 a 90 (hoy incluido);
         // las ventanas son acumulativas: ≤60 incluye las dos primeras.
-        assert_eq!(cuotas_por_vencer(&plan, &[], hoy, 30), 0);
-        assert_eq!(cuotas_por_vencer(&plan, &[], hoy, 60), 2);
-        assert_eq!(cuotas_por_vencer(&plan, &[], hoy, 90), 3);
-        // las ya pagadas no cuentan
-        assert_eq!(cuotas_por_vencer(&plan, &[1, 2], hoy, 90), 1);
+        assert_eq!(cuotas_por_vencer(&plan, 0, hoy, 30), 0);
+        assert_eq!(cuotas_por_vencer(&plan, 0, hoy, 60), 2);
+        assert_eq!(cuotas_por_vencer(&plan, 0, hoy, 90), 3);
+        // las cuotas cubiertas por dinero no cuentan (O1: abonos incluidos)
+        assert_eq!(cuotas_por_vencer(&plan, 2, hoy, 90), 1);
     }
 
     #[test]
@@ -1674,6 +1674,30 @@ mod tests {
         // vencida = saldo de plan_a; colocado = monto_total de plan_a + plan_b
         let tasa = r["tasa_morosidad"].as_f64().unwrap();
         assert!((tasa - esperado).abs() < 1e-9, "tasa money-based {tasa} != {esperado}");
+    }
+
+    #[test]
+    fn resumen_aging_por_dinero_incluye_los_abonos() {
+        // Ola 8-fix (O1): deuda 3000 (pago 500 × 6) con un abono de 500 → 1
+        // cuota cubierta por dinero; las 5 restantes vencidas hace >90 días →
+        // aging.90+ = 2500 (antes el abono no bajaba el aging: 3000).
+        let mut plan = plan_ejemplo();
+        plan.id = ObjectId::parse_str("507f1f77bcf86cd799439011").ok();
+        plan.monto_total = 3000.0;
+        plan.pago_mensual = 500.0;
+        plan.plazo_meses = 6;
+        plan.fecha = "2026-01-01".into();
+        let mut pagos = HashMap::new();
+        pagos.insert(
+            plan.id.as_ref().unwrap().to_hex(),
+            PagosPlan { cuotas: vec![], total: 500.0, por_fecha: HashMap::new() },
+        );
+        let hoy = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        let r = resumen_cartera(&[plan], &pagos, &HashMap::new(), hoy, None);
+        assert_eq!(r["aging"][3]["bucket"], "90+");
+        assert_eq!(r["aging"][3]["monto"], 2500.0);
+        // flujo y por_cobrar también son por dinero: sin cuotas futuras, 0.
+        assert!(r["flujo_proyectado"].as_array().unwrap().iter().all(|f| f["monto"] == 0.0));
     }
 
     // --- Ola 8: E1 (reserva/nota/ventana) y E2 (montos recalculados) ---
