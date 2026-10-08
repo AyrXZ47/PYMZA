@@ -1,0 +1,1 @@
+/home/yovick/Sync/Notes/Ideas/PIGNUS.md

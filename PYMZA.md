@@ -1,1 +1,0 @@
-/home/yovick/Sync/Notes/Ideas/PYMZA.md
