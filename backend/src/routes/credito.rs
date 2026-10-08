@@ -9,7 +9,7 @@ use axum::{
 };
 use chrono::{Datelike, Months, NaiveDate, Utc};
 use futures::StreamExt;
-use mongodb::bson::{doc, oid::ObjectId, Document};
+use mongodb::bson::{doc, oid::ObjectId, Bson, Document};
 
 use crate::auth::EmpresaSession;
 use crate::models::cliente::Cliente;
@@ -127,11 +127,13 @@ fn cobrado_de(plan: &PlanPago, pagos_por_plan: &HashMap<String, PagosPlan>) -> f
         .unwrap_or(0.0)
 }
 
-/// Cuotas de un plan que vencen dentro de `dias` días (hoy incluido) sin pago.
-pub(crate) fn cuotas_por_vencer(plan: &PlanPago, cuotas_pagadas: &[i32], hoy: NaiveDate, dias: i32) -> i32 {
+/// Cuotas de un plan que vencen dentro de `dias` días (hoy incluido) y aún no
+/// están cubiertas POR DINERO (`cuotas_cubiertas`), no por cuota marcada — un
+/// abono parcial ya descuenta su parte (ola 8-fix, O1).
+pub(crate) fn cuotas_por_vencer(plan: &PlanPago, cubiertas: i32, hoy: NaiveDate, dias: i32) -> i32 {
     (1..=plan.plazo_meses)
         .filter(|n| {
-            !cuotas_pagadas.contains(n)
+            *n > cubiertas
                 && fecha_vencimiento(&plan.fecha, *n)
                     .map_or(false, |v| v >= hoy && (v - hoy).num_days() <= dias as i64)
         })
@@ -166,15 +168,6 @@ struct PagosPlan {
     por_fecha: HashMap<String, f64>,
 }
 
-/// Cuotas pagadas de un plan (del mapa de pagos del tenant).
-fn pagadas_de(plan: &PlanPago, pagos_por_plan: &HashMap<String, PagosPlan>) -> Vec<i32> {
-    plan.id
-        .as_ref()
-        .and_then(|id| pagos_por_plan.get(&id.to_hex()))
-        .map(|pp| pp.cuotas.clone())
-        .unwrap_or_default()
-}
-
 /// ponytail: un handler que carga planes + pagos del tenant y calcula en
 /// memoria es suficiente para el volumen de una PYME; techo: agregaciones de
 /// Mongo si el volumen escala a decenas de miles de planes.
@@ -202,15 +195,21 @@ async fn cargar_cartera(
         *entrada.por_fecha.entry(pago.fecha.clone()).or_insert(0.0) += pago.monto;
     }
 
-    // Ola 8 (E1): reconcilia el contador operativo `cobrado` — campo BSON crudo
-    // del plan (no vive en `PlanPago` para no romper el literal de tests de
-    // `pdf.rs`, archivo de otro dueño) — contra el ledger. Solo al alza
-    // (`$max`): bajar el contador a un ledger que aún no incluye un pago en
-    // vuelo clobbearía una reserva atómica concurrente. Best-effort: si falla,
-    // la lectura responde igual con el ledger.
-    let mut operativo: HashMap<String, f64> = HashMap::new();
+    // Ola 8 (E1) + 8-fix: reconcilia el contador operativo `cobrado` — campo
+    // BSON crudo del plan (no vive en `PlanPago` para no romper el literal de
+    // tests de `pdf.rs`, archivo de otro dueño) — contra el ledger en AMBAS
+    // direcciones. El contador puede quedar inflado si un `$inc` de reserva no
+    // tuvo su `Pago` (crash o fallo transitorio) o falto si el ledger recibió
+    // un pago que él no vio; en ambos casos el plan se auto-repara.
+    //
+    // No se toca `cobrado` mientras haya reservas FRESCAS en vuelo (`reservas`
+    // > 0 y `reserva_ts` reciente): bajar el contador clobbearía el `$inc` de
+    // una reserva concurrente aún sin confirmar. Una reserva "muerta" (> 5 min)
+    // o un plan legacy sin `reservas` (se trata como 0) sí se reconcilian.
+    // Best-effort: si falla, la lectura responde igual con el ledger.
+    let mut operativo: HashMap<String, (f64, i64, i64)> = HashMap::new();
     let proyeccion = mongodb::options::FindOptions::builder()
-        .projection(doc! { "cobrado": 1 })
+        .projection(doc! { "cobrado": 1, "reservas": 1, "reserva_ts": 1 })
         .build();
     let mut cursor = db
         .collection::<Document>("planes_pago")
@@ -219,26 +218,39 @@ async fn cargar_cartera(
     while let Some(d) = cursor.next().await {
         let d = d?;
         if let Ok(oid) = d.get_object_id("_id") {
-            operativo.insert(oid.to_hex(), d.get_f64("cobrado").unwrap_or(0.0));
+            operativo.insert(
+                oid.to_hex(),
+                (
+                    bson_f64(d.get("cobrado")),
+                    bson_i64(d.get("reservas")),
+                    bson_i64(d.get("reserva_ts")),
+                ),
+            );
         }
     }
+    let ahora_ms = Utc::now().timestamp_millis();
     let coll_planes = db.collection::<PlanPago>("planes_pago");
     for plan in planes.iter() {
         let Some(id) = &plan.id else { continue };
         let hex = id.to_hex();
-        let actual = operativo.get(&hex).copied().unwrap_or(0.0);
+        let (actual, reservas, reserva_ts) = operativo.get(&hex).copied().unwrap_or((0.0, 0, 0));
         let ledger = pagos.get(&hex).map(|pp| pp.total).unwrap_or(0.0);
-        if ledger > actual + 1e-9 {
-            if let Err(e) = coll_planes
-                .update_one(
-                    doc! { "_id": id, "empresa": correo },
-                    doc! { "$max": { "cobrado": ledger } },
-                    None,
-                )
-                .await
-            {
-                eprintln!("⚠️ No se pudo reconciliar `cobrado` del plan {hex}: {e}");
-            }
+        let reserva_viva =
+            reservas > 0 && ahora_ms.saturating_sub(reserva_ts) < RESERVA_VIVA_MS;
+        if reserva_viva || (ledger - actual).abs() <= 1e-9 {
+            continue;
+        }
+        // Bidireccional: sube o baja `cobrado` al ledger y limpia las reservas
+        // muertas (legacy sin `reservas` se normaliza a 0).
+        if let Err(e) = coll_planes
+            .update_one(
+                doc! { "_id": id, "empresa": correo },
+                doc! { "$set": { "cobrado": ledger, "reservas": 0i64 } },
+                None,
+            )
+            .await
+        {
+            eprintln!("⚠️ No se pudo reconciliar `cobrado` del plan {hex}: {e}");
         }
     }
     Ok((planes, pagos))
@@ -270,7 +282,7 @@ async fn upsert_dashboard_stats(
     let proximos_cobros: i32 = planes
         .iter()
         .filter(|p| estado_plan(p, cobrado_de(p, pagos_por_plan), hoy) != "Liquidado")
-        .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, 30))
+        .map(|p| cuotas_por_vencer(p, cuotas_cubiertas(p, cobrado_de(p, pagos_por_plan)), hoy, 30))
         .sum();
 
     let coll = client.database("pymza").collection::<DashboardStats>("dashboard_stats");
@@ -295,17 +307,27 @@ fn error_status(status: StatusCode, message: &str) -> (StatusCode, Json<serde_js
     (status, Json(serde_json::json!({ "status": "error", "message": message })))
 }
 
-/// Contrato del dominio (F1/F2, auditoría ola 6; plazos ola 7): el plazo debe
-/// ser 1, 3, 6, 9 o 12 meses y el monto positivo finito. Sin esto,
-/// `generar_plan_pagos` materializa un Vec de `plazo_meses` elementos
-/// (i32::MAX → ~86 GB → OOM con 1 request) y `autorizar` persiste el plan
-/// envenenado. Devuelve el mensaje del 400.
+/// Ola 8-fix (E2): tope de negocio de `monto_total` en MXN. Por encima,
+/// `pago_mensual_de` desborda a `inf` (el `*100` de `redondear2` desborda
+/// ~1e308) y Mongo persiste `pago_mensual: Infinity`, que corrompe el dashboard
+/// del tenant de forma permanente. 1e12 (un billón de pesos) no lo alcanza una
+/// PYME real y deja margen de sobra para el redondeo.
+const MONTO_MAX_MXN: f64 = 1e12;
+
+/// Contrato del dominio (F1/F2, auditoría ola 6; plazos ola 7; tope ola 8-fix):
+/// el plazo debe ser 1, 3, 6, 9 o 12 meses y el monto positivo, finito y
+/// ≤ `MONTO_MAX_MXN`. Sin esto, `generar_plan_pagos` materializa un Vec de
+/// `plazo_meses` elementos (i32::MAX → ~86 GB → OOM con 1 request) y
+/// `autorizar` persiste el plan envenenado. Devuelve el mensaje del 400.
 fn validar_plazo_y_monto(plazo_meses: i32, monto: f64) -> Option<&'static str> {
     if !matches!(plazo_meses, 1 | 3 | 6 | 9 | 12) {
         return Some("El plazo debe ser 1, 3, 6, 9 o 12 meses");
     }
     if !monto.is_finite() || monto <= 0.0 {
         return Some("El monto debe ser mayor a 0");
+    }
+    if monto > MONTO_MAX_MXN {
+        return Some("El monto excede el máximo permitido");
     }
     None
 }
@@ -448,9 +470,10 @@ fn resumen_cartera(
     }
     let mut por_cobrar = vec![0.0; etiquetas.len()];
     for plan in planes.iter().filter(|p| no_liquidado(p)) {
-        let pagadas = pagadas_de(plan, pagos_por_plan);
+        // Ola 8-fix (O1): cobertura por dinero, no por cuota marcada.
+        let cubiertas = cuotas_cubiertas(plan, cobrado_de(plan, pagos_por_plan));
         for n in 1..=plan.plazo_meses {
-            if pagadas.contains(&n) {
+            if n <= cubiertas {
                 continue;
             }
             if let Some(v) = fecha_vencimiento(&plan.fecha, n) {
@@ -493,18 +516,24 @@ fn resumen_cartera(
             let monto: f64 = planes
                 .iter()
                 .filter(|p| matches!(estado(p), "Activo" | "Moroso"))
-                .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, h) as f64 * p.pago_mensual)
+                .map(|p| {
+                    // Ola 8-fix (O1): flujo por dinero, no por cuota marcada.
+                    let cubiertas = cuotas_cubiertas(p, cobrado_de(p, pagos_por_plan));
+                    cuotas_por_vencer(p, cubiertas, hoy, h) as f64 * p.pago_mensual
+                })
                 .sum();
             serde_json::json!({ "horizonte": h, "monto": redondear2(monto) })
         })
         .collect();
 
     // Aging: saldo vencido por antigüedad de la cuota (días desde vencimiento).
+    // Ola 8-fix (O1): las cuotas cubiertas por dinero (abonos incluidos) no
+    // cuentan; antes un abono no bajaba el aging.
     let mut aging = vec![0.0; 4];
     for plan in planes.iter().filter(|p| no_liquidado(p)) {
-        let pagadas = pagadas_de(plan, pagos_por_plan);
+        let cubiertas = cuotas_cubiertas(plan, cobrado_de(plan, pagos_por_plan));
         for n in 1..=plan.plazo_meses {
-            if pagadas.contains(&n) {
+            if n <= cubiertas {
                 continue;
             }
             if let Some(v) = fecha_vencimiento(&plan.fecha, n) {
@@ -688,6 +717,14 @@ pub async fn autorizar_credito(
     // `monto_total` + `plazo` (el body solo queda por compatibilidad).
     let tasa = tasa_por_plazo(payload.plazo_meses);
     let pago_mensual = pago_mensual_de(payload.monto_total, payload.plazo_meses);
+    // Ola 8-fix (E2): red de seguridad — jamás persistir `pago_mensual` no
+    // finito (un `Infinity` en Mongo congelaba la cartera y el contrato).
+    if !pago_mensual.is_finite() {
+        return Err(error_status(
+            StatusCode::BAD_REQUEST,
+            "El monto genera un pago mensual no finito",
+        ));
+    }
     let plan_pago = PlanPago {
         id: None, // Mongo lo genera al insertar
         empresa: sesion.correo.clone(),
@@ -788,10 +825,37 @@ fn acotar_nota(nota: Option<&str>) -> Option<String> {
     nota.map(|n| n.chars().take(NOTA_MAX).collect())
 }
 
+/// Ola 8-fix (E1): una reserva más vieja que esto se considera "muerta" (el
+/// proceso murió entre reservar y confirmar/rollback) y `cargar_cartera` la
+/// recupera contra el ledger.
+const RESERVA_VIVA_MS: i64 = 5 * 60 * 1000;
+
+/// Número BSON como f64. En Mongo un `cobrado` puede ser Double (lo que
+/// escribe el backend) o Int32/Int64 (si se inyectó a mano); `Bson::as_f64`
+/// es estricto y solo acepta Double, así que se contemplan los tres.
+fn bson_f64(b: Option<&Bson>) -> f64 {
+    match b {
+        Some(Bson::Double(v)) => *v,
+        Some(Bson::Int32(v)) => f64::from(*v),
+        Some(Bson::Int64(v)) => *v as f64,
+        _ => 0.0,
+    }
+}
+
+/// Entero BSON como i64 (Int32/Int64; cualquier otro tipo → 0).
+fn bson_i64(b: Option<&Bson>) -> i64 {
+    match b {
+        Some(Bson::Int32(v)) => i64::from(*v),
+        Some(Bson::Int64(v)) => *v,
+        _ => 0,
+    }
+}
+
 /// Ola 8 (E1): reserva `monto` en el contador `cobrado` del plan de forma
-/// atómica, con guard `cobrado + monto <= pago_mensual * plazo`. Sin
-/// transacciones (mongod standalone). `Some(true)` reservó; `Some(false)` el
-/// guard no matcheó (saldo agotado o carrera perdida); `None` error de Mongo.
+/// atómica, con guard `cobrado + monto <= pago_mensual * plazo`, y suma una
+/// reserva en vuelo (`reservas`) con su `reserva_ts`. Sin transacciones
+/// (mongod standalone). `Some(true)` reservó; `Some(false)` el guard no
+/// matcheó (saldo agotado o carrera perdida); `None` error de Mongo.
 async fn reservar_cobrado(
     client: &mongodb::Client,
     correo: &str,
@@ -806,10 +870,14 @@ async fn reservar_cobrado(
             { "$multiply": ["$pago_mensual", "$plazo_meses"] },
         ] },
     };
+    let update = doc! {
+        "$inc": { "cobrado": monto, "reservas": 1i64 },
+        "$set": { "reserva_ts": Utc::now().timestamp_millis() },
+    };
     match client
         .database("pymza")
         .collection::<PlanPago>("planes_pago")
-        .find_one_and_update(filtro, doc! { "$inc": { "cobrado": monto } }, None)
+        .find_one_and_update(filtro, update, None)
         .await
     {
         Ok(Some(_)) => Some(true),
@@ -821,12 +889,31 @@ async fn reservar_cobrado(
     }
 }
 
-/// Deshace una reserva (best-effort) cuando el insert del `Pago` falla.
+/// Ola 8-fix (E1): confirma una reserva cuando el `Pago` ya quedó insertado —
+/// baja el contador de reservas en vuelo (el `cobrado` se queda). Best-effort:
+/// si falla, la reserva queda viva y se reconcilia al vencer los 5 min.
+async fn confirmar_reserva(client: &mongodb::Client, plan_id: &ObjectId) {
+    if let Err(e) = client
+        .database("pymza")
+        .collection::<PlanPago>("planes_pago")
+        .update_one(doc! { "_id": plan_id }, doc! { "$inc": { "reservas": -1i64 } }, None)
+        .await
+    {
+        eprintln!("🚨 ERROR AL CONFIRMAR RESERVA DE COBRADO: {:?}", e);
+    }
+}
+
+/// Deshace una reserva (best-effort) cuando el insert del `Pago` falla: baja el
+/// `cobrado` y la reserva en vuelo.
 async fn revertir_reserva(client: &mongodb::Client, plan_id: &ObjectId, monto: f64) {
     if let Err(e) = client
         .database("pymza")
         .collection::<PlanPago>("planes_pago")
-        .update_one(doc! { "_id": plan_id }, doc! { "$inc": { "cobrado": -monto } }, None)
+        .update_one(
+            doc! { "_id": plan_id },
+            doc! { "$inc": { "cobrado": -monto, "reservas": -1i64 } },
+            None,
+        )
         .await
     {
         eprintln!("🚨 ERROR AL REVERTIR RESERVA DE COBRADO: {:?}", e);
@@ -907,6 +994,8 @@ pub async fn registrar_pago(
         revertir_reserva(&client, &oid, payload.monto).await;
         return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error al registrar el pago"));
     }
+    // Ola 8-fix (E1): el `Pago` ya está en el ledger → confirma la reserva.
+    confirmar_reserva(&client, &oid).await;
 
     // `cobrado` incluye el pago recién insertado; el estado se recalcula por
     // dinero (ola 7) y se persiste solo si cambió.
@@ -1004,6 +1093,8 @@ pub async fn registrar_abono(
         revertir_reserva(&client, &oid, payload.monto).await;
         return Err(error_status(StatusCode::INTERNAL_SERVER_ERROR, "Error al registrar el abono"));
     }
+    // Ola 8-fix (E1): el `Pago` ya está en el ledger → confirma la reserva.
+    confirmar_reserva(&client, &oid).await;
 
     let hoy = Utc::now().date_naive();
     let cobrado_nuevo = cobrado_previo + payload.monto;
@@ -1053,7 +1144,7 @@ fn stats_dashboard(
     let proximos_cobros: i32 = planes
         .iter()
         .filter(|p| no_liquidado(p))
-        .map(|p| cuotas_por_vencer(p, &pagadas_de(p, pagos_por_plan), hoy, 30))
+        .map(|p| cuotas_por_vencer(p, cuotas_cubiertas(p, cobrado_de(p, pagos_por_plan)), hoy, 30))
         .sum();
 
     let capital_colocado: f64 = planes
@@ -1390,11 +1481,11 @@ mod tests {
         let hoy = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
         // cuota 1 vence a 31 días, cuota 2 a 59, cuota 3 a 90 (hoy incluido);
         // las ventanas son acumulativas: ≤60 incluye las dos primeras.
-        assert_eq!(cuotas_por_vencer(&plan, &[], hoy, 30), 0);
-        assert_eq!(cuotas_por_vencer(&plan, &[], hoy, 60), 2);
-        assert_eq!(cuotas_por_vencer(&plan, &[], hoy, 90), 3);
-        // las ya pagadas no cuentan
-        assert_eq!(cuotas_por_vencer(&plan, &[1, 2], hoy, 90), 1);
+        assert_eq!(cuotas_por_vencer(&plan, 0, hoy, 30), 0);
+        assert_eq!(cuotas_por_vencer(&plan, 0, hoy, 60), 2);
+        assert_eq!(cuotas_por_vencer(&plan, 0, hoy, 90), 3);
+        // las cuotas cubiertas por dinero no cuentan (O1: abonos incluidos)
+        assert_eq!(cuotas_por_vencer(&plan, 2, hoy, 90), 1);
     }
 
     #[test]
@@ -1585,6 +1676,30 @@ mod tests {
         assert!((tasa - esperado).abs() < 1e-9, "tasa money-based {tasa} != {esperado}");
     }
 
+    #[test]
+    fn resumen_aging_por_dinero_incluye_los_abonos() {
+        // Ola 8-fix (O1): deuda 3000 (pago 500 × 6) con un abono de 500 → 1
+        // cuota cubierta por dinero; las 5 restantes vencidas hace >90 días →
+        // aging.90+ = 2500 (antes el abono no bajaba el aging: 3000).
+        let mut plan = plan_ejemplo();
+        plan.id = ObjectId::parse_str("507f1f77bcf86cd799439011").ok();
+        plan.monto_total = 3000.0;
+        plan.pago_mensual = 500.0;
+        plan.plazo_meses = 6;
+        plan.fecha = "2026-01-01".into();
+        let mut pagos = HashMap::new();
+        pagos.insert(
+            plan.id.as_ref().unwrap().to_hex(),
+            PagosPlan { cuotas: vec![], total: 500.0, por_fecha: HashMap::new() },
+        );
+        let hoy = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        let r = resumen_cartera(&[plan], &pagos, &HashMap::new(), hoy, None);
+        assert_eq!(r["aging"][3]["bucket"], "90+");
+        assert_eq!(r["aging"][3]["monto"], 2500.0);
+        // flujo y por_cobrar también son por dinero: sin cuotas futuras, 0.
+        assert!(r["flujo_proyectado"].as_array().unwrap().iter().all(|f| f["monto"] == 0.0));
+    }
+
     // --- Ola 8: E1 (reserva/nota/ventana) y E2 (montos recalculados) ---
 
     #[test]
@@ -1603,6 +1718,19 @@ mod tests {
         let larga = "x".repeat(300);
         assert_eq!(acotar_nota(Some(&larga)).unwrap().chars().count(), 280);
         assert_eq!(acotar_nota(Some("ok")).as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn bson_f64_e_i64_aceptan_enteros_y_doubles() {
+        // E1 ola 8-fix: un `cobrado` inyectado como entero (Int32) también
+        // debe reconciliarse, no solo el Double que escribe el backend.
+        assert_eq!(bson_f64(Some(&Bson::Int32(5000))), 5000.0);
+        assert_eq!(bson_f64(Some(&Bson::Int64(7))), 7.0);
+        assert_eq!(bson_f64(Some(&Bson::Double(1.5))), 1.5);
+        assert_eq!(bson_f64(None), 0.0);
+        assert_eq!(bson_i64(Some(&Bson::Int32(1))), 1);
+        assert_eq!(bson_i64(Some(&Bson::Int64(-1))), -1);
+        assert_eq!(bson_i64(None), 0);
     }
 
     #[test]
@@ -1725,6 +1853,23 @@ mod tests {
         assert_eq!(validar_plazo_y_monto(4, 100.0), msg, "plazo fuera del catálogo");
         assert_eq!(validar_plazo_y_monto(6, -1.0), Some("El monto debe ser mayor a 0"));
         assert_eq!(validar_plazo_y_monto(6, 0.0), Some("El monto debe ser mayor a 0"));
+        // E2 ola 8-fix: no finito sigue siendo "mayor a 0" (mismo mensaje);
+        // finito pero por encima del tope → 400 propio; el tope exacto pasa.
+        assert_eq!(validar_plazo_y_monto(6, f64::INFINITY), Some("El monto debe ser mayor a 0"));
+        assert_eq!(validar_plazo_y_monto(6, 1e308), Some("El monto excede el máximo permitido"));
+        assert_eq!(
+            validar_plazo_y_monto(6, MONTO_MAX_MXN + 1.0),
+            Some("El monto excede el máximo permitido")
+        );
+        assert_eq!(validar_plazo_y_monto(6, MONTO_MAX_MXN), None);
+    }
+
+    #[test]
+    fn pago_mensual_en_el_tope_sigue_siendo_finito() {
+        // E2 ola 8-fix: con el tope, la fórmula nunca desborda a Infinity.
+        let pm = pago_mensual_de(MONTO_MAX_MXN, 1);
+        assert!(pm.is_finite(), "pago mensual no finito en el tope: {pm}");
+        assert!(pm > MONTO_MAX_MXN, "incluye el interés del 7% a 1 mes");
     }
 
     // Client sin servidor: la validación corre ANTES de cualquier acceso a

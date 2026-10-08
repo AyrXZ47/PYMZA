@@ -488,6 +488,13 @@ compatibilidad pero **se ignoran**: el backend recalcula
 valores. La deuda (`pago_mensual × plazo`) queda así determinada por
 `monto_total` + `plazo`, nunca por el body.
 
+**Ola 8-fix (E2, tope):** `monto_total` debe ser finito, `> 0` y
+`≤ MONTO_MAX_MXN` (1e12 MXN) → si no, `400` (mensaje
+`"El monto excede el máximo permitido"`). Además, antes de persistir se verifica
+que `pago_mensual_de(...)` sea finito. Con esto nunca se guarda
+`pago_mensual: Infinity` en `planes_pago` (antes un monto enorme corrompía el
+dashboard del tenant de forma permanente).
+
 **Respuesta (error al guardar el plan de pago):**
 ```json
 { "status": "error", "message": "Error al guardar el plan de pago" }
@@ -561,13 +568,15 @@ la empresa del token; el tenant sale del token, nunca del body.
 
 **Colecciones Mongo:** `pagos` (inserta `{ plan_id, empresa, cliente_curp, cuota, monto, fecha, tipo: "cuota" }`, fecha UTC "YYYY-MM-DD"), `planes_pago` (actualiza `estado` si cambió y reserva el contador `cobrado`) y `dashboard_stats` (upsert recalculado).
 
-**Concurrencia (ola 8, E1):** antes de insertar, el handler **reserva de forma
-atómica** el monto en el contador `cobrado` del plan con un guard
-`$expr: cobrado + monto <= pago_mensual × plazo` (`find_one_and_update` + `$inc`,
-sin transacciones). Si dos pagos concurrentes compiten por el mismo saldo, los
-que no caben reciben `400` y no insertan nada. Si el insert falla (incluido el
-`E11000` del índice único parcial de `plan_id+cuota`), se revierte el `$inc` y
-se devuelve `500`.
+**Concurrencia (ola 8, E1; recuperable en 8-fix):** antes de insertar, el handler
+**reserva de forma atómica** el monto en el contador `cobrado` del plan con un guard
+`$expr: cobrado + monto <= pago_mensual × plazo` (`find_one_and_update` + `$inc`
+sobre `cobrado` y `reservas`, `$set` de `reserva_ts`; sin transacciones). Si dos
+pagos concurrentes compiten por el mismo saldo, los que no caben reciben `400` y
+no insertan nada. Si el insert falla (incluido el `E11000` del índice único
+parcial de `plan_id+cuota`), se revierte el `$inc` y se devuelve `500`; si el
+`Pago` se inserta, se confirma la reserva (`reservas -= 1`). Una reserva que
+quede colgada se recupera en la reconciliación (§"Semántica de saldo y estado").
 
 ### Semántica de saldo y estado (ola 7)
 
@@ -584,10 +593,26 @@ Todo se calcula por **dinero**, no por cuotas marcadas:
 
 **Ola 8 (E1):** `planes_pago` guarda además un contador operativo `cobrado`
 (campo crudo, no movido por el ledger) que se reserva de forma atómica antes de
-cada pago/abono. Al leer la cartera se **reconcilia al alza** contra la suma del
-ledger (`$max`, best-effort), de modo que un plan legacy (sin el campo) queda
-corregido en su primera lectura. El ledger (`pagos`) sigue siendo la verdad de
+cada pago/abono, junto con `reservas` (nº de reservas en vuelo) y `reserva_ts`
+(epoch ms de la última reserva). El ledger (`pagos`) sigue siendo la verdad de
 auditoría; el contador solo evita que N pagos concurrentes rebasen la deuda.
+
+**Ola 8-fix (E1, recuperación):** el contador dejó de ser irreversible. Al leer
+la cartera se **reconcilia en ambas direcciones** (sube o baja) contra la suma
+del ledger, con dos salvaguardas:
+
+- Mientras haya reservas **frescas** en vuelo (`reservas > 0` y `reserva_ts`
+  reciente), no se toca `cobrado`: bajar el contador clobbearía una reserva
+  concurrente aún sin confirmar. Una reserva **muerta** (más de 5 minutos) se
+  recupera.
+- Los planes legacy sin `reservas` se tratan como 0, así un `cobrado` inflado se
+  auto-repara en su primera lectura y el plan vuelve a ser cobrable.
+
+Una reserva se limpia en cuanto el `Pago` queda insertado (`reservas -= 1`) o se
+revierte si el insert falla (`cobrado -= monto, reservas -= 1`). Para reparar en
+bloque planes legacy con dinero inconsistente existe
+`backend/scripts/reparar_planes.js` (dry-run por defecto; lo corre el operador
+con `APPLY=1`).
 
 ---
 
@@ -628,8 +653,9 @@ Ola 7 — registra un **abono parcial** (pago a cuenta) que baja el saldo **sin 
    { "status": "error", "message": "El abono excede el saldo pendiente" }
    ```
 
-**Concurrencia (ola 8, E1):** igual que en `POST /api/creditos/pagos`, el abono
-reserva el `cobrado` del plan de forma atómica antes de insertar. N abonos
+**Concurrencia (ola 8, E1; recuperable en 8-fix):** igual que en
+`POST /api/creditos/pagos`, el abono reserva `cobrado`/`reservas` de forma
+atómica antes de insertar y confirma o revierte la reserva. N abonos
 concurrentes nunca suman más que la deuda: los que no caben reciben `400`.
 
 **Respuesta (éxito):** la misma shape que `POST /api/creditos/pagos` (el plan con `cobrado`/`saldo` recalculados y el `estado` sin cambios si aún hay saldo).
@@ -777,17 +803,18 @@ Definiciones exactas:
 - `cobrado_vs_por_cobrar` — sin ventana: 6 meses (actual + 5 previos,
   ascendente, `mes` = "YYYY-MM"); con `?desde&hasta`: los meses de la ventana.
   `cobrado` = pagos/abonos con fecha dentro de la ventana (o del mes); `por_cobrar`
-  = cuotas esperadas de esa ventana (vencimiento en ella, sin pago) en planes no
-  liquidados.
+  = cuotas esperadas de esa ventana (vencimiento en ella) **no cubiertas por
+  dinero** (`cuotas_cubiertas`, abonos incluidos) en planes no liquidados.
 - `tasa_morosidad` — f64 0..1 **por dinero** (ola 8): `cartera_vencida /
   capital_colocado`, donde vencida = suma de `saldo` de planes Moroso y colocado
   = suma de `monto_total` de planes no liquidados (0 si el capital colocado es 0).
-- `flujo_proyectado` — monto de las cuotas que vencen en ≤30 / ≤60 / ≤90 días
-  (ventanas acumulativas, hoy incluido) de planes con estado recalculado Activo o
-  Moroso.
-- `aging` — saldo vencido por antigüedad de la cuota impaga (días desde su
-  vencimiento): 1–30 → "0-30", 31–60, 61–90, >90 → "90+". Solo planes no
-  liquidados.
+- `flujo_proyectado` — monto de las cuotas **no cubiertas por dinero** que vencen
+  en ≤30 / ≤60 / ≤90 días (ventanas acumulativas, hoy incluido) de planes con
+  estado recalculado Activo o Moroso.
+- `aging` — saldo vencido por antigüedad de la cuota impaga **no cubierta por
+  dinero** (días desde su vencimiento): 1–30 → "0-30", 31–60, 61–90, >90 → "90+".
+  Solo planes no liquidados. Un abono de 500 sobre una deuda de 3000 (pago 500 ×
+  6) deja `aging.90+ = 2500`, no 3000.
 - `top_deudores` — máx 10, saldo = pago_mensual × plazo − pagos registrados,
   descendente; `nombre` viene de `clientes` por `curp` (si el cliente ya no
   existe, el curp hace de nombre).
